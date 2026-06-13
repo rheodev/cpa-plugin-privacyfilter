@@ -1,0 +1,11 @@
+.DS_Store
+dist/
+test-output*
+*.h
+*.so
+*.dylib
+*.dll
+.idea/
+*.iml
+*.log
+*.tmp
