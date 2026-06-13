@@ -86,25 +86,37 @@ privacyfilter/
 
 ## 配置
 
-插件接收来自 CLIProxyAPI 的 YAML 配置。
+插件在 CLIProxyAPI 主配置文件（`config.yaml`）中配置。`plugins.configs.<id>` 下，
+宿主字段（`enabled`、`priority`）由 CLIProxyAPI 处理，其余 YAML 子树原样透传给插件。
 
-最小配置：
-
-```yaml
-{}
-```
-
-自定义配置：
+启用插件：
 
 ```yaml
-gitleaks_toml: ""      # 为空时使用插件目录下的 rules/gitleaks.toml
-skip_models:
-  - gpt-4
-skip_formats:
-  - openai
+plugins:
+  enabled: true
+  dir: "plugins"
+  configs:
+    privacyfilter:
+      enabled: true
 ```
 
-字段说明：
+启用并自定义规则：
+
+```yaml
+plugins:
+  enabled: true
+  dir: "plugins"
+  configs:
+    privacyfilter:
+      enabled: true
+      gitleaks_toml: ""        # 为空时使用内嵌规则（或共享库旁的 rules/gitleaks.toml）
+      skip_models:
+        - gpt-4
+      skip_formats:
+        - openai
+```
+
+插件字段说明：
 
 | 字段              | 类型     | 默认值  | 说明                             |
 |-----------------|--------|------|--------------------------------|

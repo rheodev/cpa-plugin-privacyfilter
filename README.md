@@ -89,25 +89,39 @@ Plugin metadata:
 
 ## Configuration
 
-The plugin accepts YAML configuration from CLIProxyAPI.
+The plugin is configured inside CLIProxyAPI's main config file (`config.yaml`).
+Under `plugins.configs.<id>`, the host-owned fields (`enabled`, `priority`) are
+consumed by CLIProxyAPI, and the remaining YAML subtree is passed to the plugin
+verbatim.
 
-Minimal configuration:
-
-```yaml
-{ }
-```
-
-Custom configuration:
+Enable the plugin:
 
 ```yaml
-gitleaks_toml: ""      # Empty value uses rules/gitleaks.toml from the plugin directory
-skip_models:
-  - gpt-4
-skip_formats:
-  - openai
+plugins:
+  enabled: true
+  dir: "plugins"
+  configs:
+    privacyfilter:
+      enabled: true
 ```
 
-Fields:
+Enable with custom rules:
+
+```yaml
+plugins:
+  enabled: true
+  dir: "plugins"
+  configs:
+    privacyfilter:
+      enabled: true
+      gitleaks_toml: ""        # Empty uses embedded rules (or rules/gitleaks.toml sidecar)
+      skip_models:
+        - gpt-4
+      skip_formats:
+        - openai
+```
+
+Plugin fields:
 
 | Field           | Type   | Default | Description                                                                            |
 |-----------------|--------|---------|----------------------------------------------------------------------------------------|
