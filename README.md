@@ -5,6 +5,8 @@ English | [简体中文](README.zh-CN.md)
 A native privacy filter plugin for CLIProxyAPI. It intercepts model requests, detects sensitive text, and redacts it
 before the request is forwarded to an upstream provider.
 
+AI learners and builders can join the Linux.do community: [linux.do](https://linux.do/).
+
 This project uses [packyme/privacy-filter](https://github.com/packyme/privacy-filter) for the core filtering logic and
 adapts it to the CPA plugin ABI from [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI).
 

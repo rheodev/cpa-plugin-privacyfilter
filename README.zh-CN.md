@@ -4,6 +4,8 @@
 
 CLIProxyAPI 的隐私过滤插件，用于在请求发送给模型前自动识别并脱敏敏感信息。
 
+学 AI 就上 L 站：[linux.do](https://linux.do/)。
+
 本项目基于 [packyme/privacy-filter](https://github.com/packyme/privacy-filter)
 实现核心过滤能力，并适配 [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 的 CPA 插件 ABI。
 
