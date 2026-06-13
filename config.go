@@ -35,18 +35,22 @@ func parseConfig(raw []byte) (privacyFilterConfig, error) {
 	return cfg, nil
 }
 
-func (cfg *privacyFilterConfig) resolveGitleaksPath(pluginDir string) string {
+// resolveGitleaksPath resolves the configured gitleaks rule file. The return is
+// split into a path (may be empty) and an embedded flag: when the path is empty
+// and embedded is true, the caller should load the rules baked into the binary.
+func (cfg *privacyFilterConfig) resolveGitleaksPath(pluginDir string) (path string, embedded bool) {
 	if cfg.GitleaksTOML == "" {
 		builtin := filepath.Join(pluginDir, "rules", "gitleaks.toml")
 		if _, err := os.Stat(builtin); err == nil {
-			return builtin
+			return builtin, false
 		}
-		return ""
+		// No sidecar file: fall back to the rules compiled into the binary.
+		return "", true
 	}
 	if filepath.IsAbs(cfg.GitleaksTOML) {
-		return cfg.GitleaksTOML
+		return cfg.GitleaksTOML, false
 	}
-	return filepath.Join(pluginDir, cfg.GitleaksTOML)
+	return filepath.Join(pluginDir, cfg.GitleaksTOML), false
 }
 
 func (cfg *privacyFilterConfig) shouldSkip(model, requestedModel, format string) bool {
@@ -65,7 +69,31 @@ func (cfg *privacyFilterConfig) shouldSkip(model, requestedModel, format string)
 }
 
 func newFilter(pluginDir string, cfg privacyFilterConfig) (*filter.Filter, error) {
-	tomlPath := cfg.resolveGitleaksPath(pluginDir)
+	tomlPath, embedded := cfg.resolveGitleaksPath(pluginDir)
+
+	// The filter loads its rules from a file path. When no sidecar file is
+	// present (the common case for store installs), materialize the embedded
+	// rules into a temporary file. Compiled rules live in memory, so the temp
+	// file is removed right after the filter is constructed.
+	if embedded {
+		tmp, errTmp := os.CreateTemp("", "privacyfilter-gitleaks-*.toml")
+		if errTmp != nil {
+			return nil, fmt.Errorf("create temp rules file: %w", errTmp)
+		}
+		tmpPath := tmp.Name()
+		if _, errWrite := tmp.Write(embeddedGitleaks); errWrite != nil {
+			tmp.Close()
+			os.Remove(tmpPath)
+			return nil, fmt.Errorf("write temp rules file: %w", errWrite)
+		}
+		if errClose := tmp.Close(); errClose != nil {
+			os.Remove(tmpPath)
+			return nil, fmt.Errorf("close temp rules file: %w", errClose)
+		}
+		defer func() { _ = os.Remove(tmpPath) }()
+		tomlPath = tmpPath
+	}
+
 	f, err := filter.New(tomlPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create privacy filter: %w", err)

@@ -69,13 +69,11 @@ BUILD_DIR=dist make build
 
 ## 在 CLIProxyAPI 中使用
 
-将共享库和规则目录放在同一个插件目录中：
+将共享库放入 CLIProxyAPI 的插件目录即可。Gitleaks 规则已内嵌到二进制中，无需额外文件：
 
 ```text
 privacyfilter/
-├── privacyfilter.so        # 或 privacyfilter.dylib / privacyfilter.dll
-└── rules/
-    └── gitleaks.toml
+└── privacyfilter.so        # 或 privacyfilter.dylib / privacyfilter.dll
 ```
 
 然后在 CLIProxyAPI 中启用 `privacyfilter` 插件。
@@ -114,6 +112,8 @@ skip_formats:
 | `skip_models`   | array  | `[]` | 命中的模型不做脱敏                      |
 | `skip_formats`  | array  | `[]` | 命中的来源格式不做脱敏                    |
 
+当 `gitleaks_toml` 为空、且共享库旁不存在 `rules/gitleaks.toml` 时，插件使用构建时内嵌到二进制中的规则。
+
 ## 工作方式
 
 插件会在 before-auth 和 after-auth 请求拦截阶段运行，然后解析 JSON 请求体：
@@ -145,16 +145,23 @@ skip_formats:
 
 ## 规则
 
-内置规则位于：
+内置规则在构建时内嵌到共享库中，来源：
 
 ```text
 rules/gitleaks.toml
 ```
 
-更新内置规则：
+运行时按以下顺序解析规则：
+
+1. 配置项 `gitleaks_toml`（若设置）
+2. 共享库旁的 `rules/gitleaks.toml` 附带文件
+3. 构建时内嵌的规则（默认）
+
+更新内嵌规则并重新构建：
 
 ```bash
 make update-rules
+make build
 ```
 
 也可以通过 `gitleaks_toml` 指定自己的规则文件：

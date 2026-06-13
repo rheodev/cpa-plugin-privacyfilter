@@ -71,13 +71,12 @@ BUILD_DIR=dist make build
 
 ## Use with CLIProxyAPI
 
-Place the shared library and rule directory in the same plugin directory:
+Place the shared library in your CLIProxyAPI plugin directory. The gitleaks
+rules are embedded in the binary, so no extra files are required:
 
 ```text
 privacyfilter/
-├── privacyfilter.so        # or privacyfilter.dylib / privacyfilter.dll
-└── rules/
-    └── gitleaks.toml
+└── privacyfilter.so        # or privacyfilter.dylib / privacyfilter.dll
 ```
 
 Then enable the `privacyfilter` plugin in CLIProxyAPI.
@@ -116,6 +115,9 @@ Fields:
 | `skip_models`   | array  | `[]`    | Models that should skip redaction.                                                     |
 | `skip_formats`  | array  | `[]`    | Source formats that should skip redaction.                                             |
 
+When `gitleaks_toml` is empty and no `rules/gitleaks.toml` sidecar file exists,
+the plugin uses the rules embedded in the binary at build time.
+
 ## How It Works
 
 The plugin runs for both before-auth and after-auth request interception hooks, then parses the JSON body:
@@ -150,16 +152,23 @@ Supported request shapes include:
 
 ## Rules
 
-Built-in rules:
+Built-in rules are embedded into the shared library at build time from:
 
 ```text
 rules/gitleaks.toml
 ```
 
-Update built-in rules:
+At runtime the plugin resolves rules in this order:
+
+1. `gitleaks_toml` config value, if set
+2. `rules/gitleaks.toml` sidecar next to the shared library
+3. The rules embedded at build time (default)
+
+Update embedded rules and rebuild:
 
 ```bash
 make update-rules
+make build
 ```
 
 You can also set `gitleaks_toml` to use your own rule file:
