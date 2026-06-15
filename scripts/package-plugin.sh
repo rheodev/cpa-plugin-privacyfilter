@@ -15,7 +15,7 @@ rm -f go-cross-bin.h "${lib_dir}/${PLUGIN_ID}.h"
 
 if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
 	powershell -Command "Compress-Archive -Path '${lib_dir}/${lib_name}' -DestinationPath '${archive_name}'"
-	certutil -hashfile "${archive_name}" SHA256 | grep -v "^SHA256" | sed "s/$/  ${archive_name}/" > "${archive_name}.sha256"
+	powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 '${archive_name}').Hash.ToLower() + '  ${archive_name}'" > "${archive_name}.sha256"
 else
 	(
 		cd "${lib_dir}"
