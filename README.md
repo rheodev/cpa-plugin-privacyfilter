@@ -231,7 +231,7 @@ The block of a machine sits between two marker comments that carry its host name
 The model does see that the values are pseudonyms: `.invalid` is a reserved top-level domain, `100.64.0.0/10` is the carrier-grade NAT range, a UUID with version nibble `f` exists in no RFC. Left to itself it comments on that, asks whether the host name is a placeholder, drops the `.invalid`, or "corrects" the value. Tell it once, in the project's `CLAUDE.md` or in the system prompt, and it stops:
 
 ```markdown
-Host names like `h-<hex>`, domains like `d-<hex>.invalid`, addresses in `100.64.0.0/10`, MACs starting with `02:` and similar tokens in this session are pseudonyms that a proxy swaps back to the real values before I see the answer. Treat them as the real names: use them verbatim, never shorten or "fix" them, never drop the `.invalid`, never invent new ones in the same shape, and do not comment on their form.
+Host names like `h-<hex>`, domains like `d-<hex>.invalid`, addresses in `100.64.0.0/10`, MACs starting with `02:` and similar tokens in this session are pseudonyms that a proxy swaps back to the real values before I see the answer. Treat them as the real names: use them verbatim, never shorten or "fix" them, never drop the `.invalid`, never invent new ones in the same shape, and do not comment on their form. When a tool shows a directory or a file under a different name than the one you created it with, that is the proxy at work and not an error: use the name as the listing shows it, or work relative to a directory you already know.
 ```
 
 ## Checklist
@@ -347,6 +347,7 @@ What the model writes first stays as it is. A directory the model creates with `
 - A term with `ß` and `ignore_case` does not match the spelling with `SS` in an all-caps line; the two are different words to the matcher. Add the `SS` spelling as a second term if such lines pass through.
 - `path.enabled` defaults to `false`. Switch it on after you have seen the stream restore work in your setup: a half-restored path in a tool call does more harm than a leaked one.
 - The betterleaks layer exists only in a build with the `betterleaks` tag, which roughly triples the size of the shared library.
+- Output that spells a value out in another form, `od -c`, `xxd`, `base64`, passes the term list unmatched: the matcher looks for the value as written. This stays as it is on purpose. A model that inspects a name byte by byte is making sure a replacement went right, its last resort when a listing and a command disagree, and taking that away would only send it looking for another way; what leaves is one value, once, in the session that needed it.
 - A serial number is only detected behind a label. A bare serial in running text, a git commit hash, an image digest or a DNS zone serial are left alone on purpose, so a serial printed without any label reaches the model unchanged. Add it to the term list if it matters.
 - With `path.filenames: all`, the model sees every file name as `f-<12 hex><ext>`. When it creates a new file it tends to pick a name of the same shape, which is in no mapping table and reaches the client as is. Rename the file; the content is restored normally. The default `terms` leaves file names readable and avoids this.
 
