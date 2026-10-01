@@ -178,11 +178,15 @@ func pathStart(text string, i int) (start, end int, ok bool) {
 		return 0, 0, false
 	case rest[0] == '/':
 		// "$HOME/x" is a path from the slash on; "km/h" and ".../x" are
-		// not.
+		// not, and neither is the slash of a closing tag, "</p>".
 		if isSegmentRune(prev) && !variableBefore(text, i) {
 			return 0, 0, false
 		}
-		return i, pathEnd(text, i), true
+		end = pathEnd(text, i)
+		if closingTag(text, i, end) {
+			return 0, 0, false
+		}
+		return i, end, true
 	case strings.HasPrefix(rest, "~/"), strings.HasPrefix(rest, "./"), strings.HasPrefix(rest, "../"):
 		// Behind a segment character the prefix is the tail of something
 		// else: the third dot of ".../x" is not "./x".
@@ -199,6 +203,11 @@ func pathStart(text string, i int) (start, end int, ok bool) {
 	}
 	end = pathEnd(text, i)
 	if end == i || !bareShape(text[i:end]) {
+		return 0, 0, false
+	}
+	// The slash in front of a ">" closes a tag, "<br/>" and
+	// "<input disabled/>"; it does not end a directory.
+	if text[end-1] == '/' && end < len(text) && text[end] == '>' {
 		return 0, 0, false
 	}
 	return i, end, true
@@ -225,13 +234,25 @@ func variableBefore(text string, i int) bool {
 	return c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 }
 
+// closingTag reports whether the slash at text[i] opens the end tag of
+// markup, "</p>" or "</my-component>": a "<" in front, a single segment
+// behind, and ">" right after it, where end is the offset pathEnd found.
+// The input redirection of the shell, "done </home/x/list.txt", has more
+// than one segment and no ">" behind it and stays a path; so does a path
+// in an attribute value, which has a quote or "=" in front.
+func closingTag(text string, i, end int) bool {
+	return i > 0 && text[i-1] == '<' && end < len(text) && text[end] == '>' &&
+		strings.IndexByte(text[i+1:end], '/') < 0
+}
+
 // bareShape reports whether tok, a token that begins with neither a slash,
 // a dot-slash nor a tilde, is a path by its shape alone. Four shapes are:
 // a file extension at the end, "kunde/vertrag.pdf", the way a compiler and
 // git status print a path; a slash at the end, "kunde/", the way ls and
 // git status print a directory; a hidden directory in front,
 // ".claude/projects"; and a working directory flattened into one name,
-// see flattenedPath, on its own or as the last segment. Everything else
+// see flattenedPath, on its own or as any segment, the way the transcript
+// directory of Claude Code is listed with a session in it. Everything else
 // with a slash is prose or a name that merely looks like a path, "and/or",
 // "km/h", "TCP/IP", "Client/Server", "origin/main", "application/json",
 // and with them the bare directory path "kunde/sub", which no rule can
@@ -254,7 +275,15 @@ func bareShape(tok string) bool {
 		return false
 	}
 	last := tok[strings.LastIndexByte(tok, '/')+1:]
-	return last == "" || first[0] == '.' || flattenedPath(last) || hasFileExt(last)
+	if last == "" || first[0] == '.' || hasFileExt(last) {
+		return true
+	}
+	for seg := range strings.SplitSeq(tok, "/") {
+		if flattenedPath(seg) {
+			return true
+		}
+	}
+	return false
 }
 
 // flattenedRoots are the directories a working directory can begin with,

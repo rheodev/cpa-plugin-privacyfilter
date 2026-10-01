@@ -216,6 +216,8 @@ func TestPaths_BareShapes(t *testing.T) {
 		"ls -la " + flat:                                    "path_segment:" + flat,
 		r("projects", flat):                                 "path_segment:projects path_segment:" + flat,
 		r(flat, "abc.jsonl"):                                "path_segment:" + flat,
+		r(flat, "0b3f9c2e"):                                 "path_segment:" + flat + " path_segment:0b3f9c2e",
+		r("projects", flat, "0b3f9c2e"):                     "path_segment:projects path_segment:" + flat + " path_segment:0b3f9c2e",
 		flatTmp:                                             "path_segment:" + flatTmp,
 		"[doc](" + r("kunde-x", "README.md") + ")":          "path_segment:kunde-x",
 		"siehe " + r("kunde-x", "notes.md") + ".":           "path_segment:kunde-x",
@@ -248,6 +250,42 @@ func TestPaths_BareShapes(t *testing.T) {
 	for _, text := range untouched {
 		if got := d.Scan(text); len(got) != 0 {
 			t.Errorf("Scan(%q) = %q, want nothing", text, values(got))
+		}
+	}
+}
+
+// The slash of a tag is not a path: "</p>" is markup, and so are
+// "</div></section>" and the self-closing "<br/>" and "<input disabled/>",
+// whose slash would otherwise pass as the trailing slash of a directory.
+// A path in an attribute value and the input redirection of the shell,
+// "done </home/x/list.txt", keep their slash: the one has a quote in
+// front, the other more than one segment behind the "<".
+func TestPaths_ClosingTagIsNotAPath(t *testing.T) {
+	d := newPaths(t, detect.PathsConfig{ReplaceUnknown: true})
+	for _, text := range []string{
+		"<p>Text</p>",
+		"</div>",
+		"<h3>Titel</h3>",
+		"</section></article>",
+		"<br/> <br /> <img src=x/> <input disabled/> <img src=foo/>",
+		"<my-component></my-component>",
+		"<ul>\n  <li>eins</li>\n</ul>",
+	} {
+		if got := d.Scan(text); len(got) != 0 {
+			t.Errorf("Scan(%q) = %q, want nothing", text, values(got))
+		}
+	}
+	caught := map[string]string{
+		`<a href="/kunde-x/seite.html">`: "path_segment:kunde-x",
+		"done </home/kunde-x/list.txt":   "path_segment:kunde-x",
+		"<pre>/home/kunde-x/</pre>":      "path_segment:kunde-x",
+		"<code>kunde-x/notes.md</code>":  "path_segment:kunde-x",
+	}
+	for text, want := range caught {
+		got := d.Scan(text)
+		assertDisjointSorted(t, text, got)
+		if values(got) != want {
+			t.Errorf("Scan(%q) = %q, want %q", text, values(got), want)
 		}
 	}
 }
