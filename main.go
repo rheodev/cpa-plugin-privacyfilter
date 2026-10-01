@@ -396,6 +396,7 @@ func (p *privacyFilterPlugin) initPseudonymize() error {
 		layers = append(layers, secretsLayer)
 	}
 	p.layers = layers
+	p.terms = termsLayer
 	p.deny = payload.DefaultDeny()
 
 	audit, errAudit := newAuditLog(p.pluginDir, p.cfg.Audit.Path, p.cfg.Audit.MaxBytes)

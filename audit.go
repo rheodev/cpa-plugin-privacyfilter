@@ -74,8 +74,8 @@ func (a *auditLog) request(requestID string, res forwardResult, sourceFormat str
 	id := auditID(requestID)
 	var b strings.Builder
 	now := time.Now().Format(time.RFC3339)
-	fmt.Fprintf(&b, "%s\trequest\t%s\tformat=%s\tsession=%s\tbody=%d\tout=%d\tdistinct=%d\ttable=%d\n",
-		now, id, auditField(sourceFormat), res.session.Source, bodyBytes, len(res.out), len(res.added), res.table.Len())
+	fmt.Fprintf(&b, "%s\trequest\t%s\tformat=%s\tsession=%s\tbody=%d\tout=%d\tdistinct=%d\ttable=%d\tkept=%d\n",
+		now, id, auditField(sourceFormat), res.session.Source, bodyBytes, len(res.out), len(res.added), res.table.Len(), sumCounts(res.kept))
 	entries := append([]mapping.Entry(nil), res.added...)
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].Kind != entries[j].Kind {

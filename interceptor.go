@@ -51,9 +51,13 @@ type privacyFilterPlugin struct {
 	// networks are the cidr terms of the list, parsed; every generator of
 	// this plugin keeps their structure, see pseudo.Generator.WithNetworks.
 	networks []netip.Prefix
-	layers   []detect.Detector
-	deny     *payload.DenyList
-	store    *mapping.Store
+	// terms is the term layer alone, the first of layers; the forward pass
+	// asks it whether a value the model wrote carries a term inside, see
+	// authorship.
+	terms  detect.Detector
+	layers []detect.Detector
+	deny   *payload.DenyList
+	store  *mapping.Store
 	// streams holds the holdback state of every open streamed response; it
 	// is rt.streams, or nil when restore.stream is off.
 	streams *streams
@@ -262,6 +266,9 @@ type forwardResult struct {
 	added   []mapping.Entry
 	session pseudo.Session
 	counts  map[detect.Kind]int
+	// kept counts, per kind, the detected values left standing because
+	// the model wrote them first; see authorship.
+	kept map[detect.Kind]int
 }
 
 // pseudonymizeRequest is the forward pass of ModePseudonymize: identify the
@@ -307,6 +314,7 @@ func (p *privacyFilterPlugin) pseudonymizeRequest(req pluginapi.RequestIntercept
 		"source_format":  req.SourceFormat,
 		"session_source": string(res.session.Source),
 		"replacements":   formatCounts(res.counts),
+		"kept":           formatCounts(res.kept),
 		"distinct":       len(res.added),
 		"body_bytes":     len(body),
 		"out_bytes":      len(res.out),
@@ -338,30 +346,52 @@ func (p *privacyFilterPlugin) runForward(headers http.Header, body []byte) (res 
 	table.SetAvoid(p.isTermLiteral)
 	det := detect.NewComposite(table.Knows, p.layers...)
 	counts := make(map[detect.Kind]int)
+	kept := make(map[detect.Kind]int)
 	res.table = table
 	res.counts = counts
+	res.kept = kept
 
-	out, changed, errWalk := payload.Walk(body, payload.WalkOptions{
+	opts := payload.WalkOptions{
 		MaxBodyBytes: p.cfg.Limits.MaxBodyBytes,
 		Deny:         p.deny,
-	}, func(_ payload.Path, text string) (string, bool) {
-		matches := det.Scan(text)
+	}
+	// The reading pass detects every string once and notes, in the order
+	// of the conversation, which values the model wrote before anybody
+	// else did; the rewriting pass below uses its matches and leaves those
+	// values standing. See authorship.
+	auth := newAuthorship(gen, p.store.Memory(res.session.ID), table, p.terms, p.networks, payload.Roles(body))
+	if _, _, errRead := payload.Walk(body, opts, func(path payload.Path, text string) (string, bool) {
+		auth.observe(det, path, text)
+		return text, false
+	}); errRead != nil {
+		return res, errRead
+	}
+	auth.decide()
+
+	out, changed, errWalk := payload.Walk(body, opts, func(_ payload.Path, text string) (string, bool) {
+		matches := auth.matches(det, text)
 		if len(matches) == 0 {
 			return text, false
 		}
 		var b strings.Builder
 		b.Grow(len(text))
-		prev := 0
+		prev, replaced := 0, 0
 		for _, m := range matches {
 			// Merge guarantees a sorted, disjoint list; the check only keeps a
 			// broken layer from slicing out of range.
 			if m.Start < prev || m.End > len(text) || m.End < m.Start {
 				continue
 			}
+			if auth.exempt(m) {
+				// The value stays; it is written with the text around it.
+				kept[m.Kind]++
+				continue
+			}
 			b.WriteString(text[prev:m.Start])
 			before := table.Len()
 			pseudonym := table.Lookup(m.Kind, m.Value)
 			if table.Len() > before {
+				auth.seen(m)
 				if e, ok := table.Original(pseudonym); ok {
 					res.added = append(res.added, e)
 				}
@@ -369,6 +399,10 @@ func (p *privacyFilterPlugin) runForward(headers http.Header, body []byte) (res 
 			b.WriteString(pseudonym)
 			prev = m.End
 			counts[m.Kind]++
+			replaced++
+		}
+		if replaced == 0 {
+			return text, false
 		}
 		b.WriteString(text[prev:])
 		return b.String(), true
@@ -444,6 +478,15 @@ func errorBody(reason string) []byte {
 
 // formatCounts renders the per-kind replacement counts in a fixed order, so two
 // identical requests produce an identical log line.
+// sumCounts returns the total over the kinds.
+func sumCounts(counts map[detect.Kind]int) int {
+	n := 0
+	for _, c := range counts {
+		n += c
+	}
+	return n
+}
+
 func formatCounts(counts map[detect.Kind]int) string {
 	if len(counts) == 0 {
 		return "none"

@@ -17,6 +17,9 @@ type StoreConfig struct {
 	// reached, the table used least recently is evicted and the eviction is
 	// logged. Default 1024.
 	MaxTables int
+	// MemoryTTL is how long a session's memory lives without being used,
+	// see Memory. Default 24 hours.
+	MemoryTTL time.Duration
 	// Now returns the current time; nil means time.Now. Tests inject a clock.
 	Now func() time.Time
 }
@@ -54,6 +57,11 @@ type Store struct {
 	sessions map[string]*sessionEntry
 	requests map[string]binding
 	seq      uint64
+
+	// memories are the conversations' memories by session, on their own
+	// lifetime memTTL; see Memory.
+	memTTL   time.Duration
+	memories map[string]*memoryEntry
 }
 
 // NewStore creates a store. Zero fields of cfg take their defaults.
@@ -64,9 +72,14 @@ func NewStore(cfg StoreConfig) *Store {
 		now:      cfg.Now,
 		sessions: make(map[string]*sessionEntry),
 		requests: make(map[string]binding),
+		memTTL:   cfg.MemoryTTL,
+		memories: make(map[string]*memoryEntry),
 	}
 	if s.ttl <= 0 {
 		s.ttl = defaultTTL
+	}
+	if s.memTTL <= 0 {
+		s.memTTL = defaultMemoryTTL
 	}
 	if s.maxTable <= 0 {
 		s.maxTable = defaultMaxTables
@@ -329,6 +342,7 @@ func (s *Store) sweepLocked(now time.Time) int {
 	if n > 0 {
 		s.dropOrphanBindingsLocked()
 	}
+	s.sweepMemoriesLocked(now)
 	return n
 }
 

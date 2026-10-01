@@ -208,6 +208,14 @@ func (t *Table) render(kind detect.Kind, value string, attempt int) string {
 	return t.gen.Pseudonym(kind, value, maxGeneratorAttempts-1) + "#" + strconv.Itoa(attempt)
 }
 
+// Has reports whether the table holds a row for value under kind.
+func (t *Table) Has(kind detect.Kind, value string) bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	_, ok := t.byKey[tableKey{kind: kind, value: value}]
+	return ok
+}
+
 // Original returns the original for a pseudonym and whether it exists.
 func (t *Table) Original(pseudonym string) (Entry, bool) {
 	t.mu.RLock()
