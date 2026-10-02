@@ -2,7 +2,7 @@
 
 Ziel ist ein Plugin, das im Dauerbetrieb keinen Schaden anrichtet: keine vertraulichen Werte hinaus, keine verfälschten Befehle zurück, kein Blockieren gültiger Anfragen, kein Datenverlust im Stream. Was geprüft ist und was dabei herauskam, steht in [BEFUNDE.md](BEFUNDE.md); diese Datei sagt, wo was liegt und was noch fehlt, damit eine Sitzung ohne Vorgeschichte weitermachen kann.
 
-Der Stand: von neunzehn Befunden sind achtzehn behoben, und die Lücke im Netz der Pfadebene ist zum größeren Teil geschlossen, weil die Pfadebene bloße Pfade an ihrer Form erkennt; was offen bleibt, der bloße Verzeichnispfad ohne Datei, der Diff-Kopf, Adressen und Windows, steht im README als Grenze. Zehn Tests im Paket `harm` zeigen, was ein Term mit Sonderzeichen anrichtet; sie überspringen sich selbst, bis `PRIVACYFILTER_OPEN_FINDINGS` gesetzt ist, weil der Lader einen solchen Wert abweist und die Tests die Wirkung dokumentieren, die er verhindert.
+Der Stand: von zwanzig Befunden sind neunzehn behoben, und die Lücke im Netz der Pfadebene ist zum größeren Teil geschlossen, weil die Pfadebene bloße Pfade an ihrer Form erkennt; was offen bleibt, der bloße Verzeichnispfad ohne Datei, der Diff-Kopf, Adressen und Windows, steht im README als Grenze. Zehn Tests im Paket `harm` zeigen, was ein Term mit Sonderzeichen anrichtet; sie überspringen sich selbst, bis `PRIVACYFILTER_OPEN_FINDINGS` gesetzt ist, weil der Lader einen solchen Wert abweist und die Tests die Wirkung dokumentieren, die er verhindert.
 
 
 ---
