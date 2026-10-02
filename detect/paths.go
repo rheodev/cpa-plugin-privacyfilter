@@ -100,6 +100,9 @@ var defaultPreserve = []string{
 	".config", ".local", ".cache", ".git", ".github", ".vscode", ".idea", "node_modules", "vendor",
 	"target", "build", "dist", "out", "obj", "release", "debug", "state", "data", "db",
 	".bashrc", ".zshrc", ".profile", ".bash_profile", ".bash_history", ".zsh_history", ".gitconfig",
+	// hidden files every repository or home has; they say what a file is
+	".env", ".envrc", ".gitignore", ".gitattributes", ".gitmodules", ".gitkeep", ".dockerignore",
+	".editorconfig", ".npmrc", ".nvmrc", ".prettierrc", ".eslintrc", ".htaccess", ".DS_Store",
 	".claude", ".codex", "plugins", "logs", "auths", ".ssh", ".gnupg", "address", "resolve",
 	"resolve.conf", "operstate", "carrier", "mtu", "speed", "duplex", "statistics", "uevent",
 }
@@ -443,11 +446,12 @@ func closingTag(text string, i, end int) bool {
 }
 
 // bareShape reports whether tok, a token that begins with neither a slash,
-// a dot-slash nor a tilde, is a path by its shape alone. Four shapes are:
+// a dot-slash nor a tilde, is a path by its shape alone. Five shapes are:
 // a file extension at the end, "kunde/vertrag.pdf", the way a compiler and
 // git status print a path; a slash at the end, "kunde/", the way ls and
-// git status print a directory; a hidden directory in front,
-// ".claude/projects"; and a working directory flattened into one name,
+// git status print a directory; a hidden name at the end,
+// "kunde/.gitignore", the way the hunk header of a diff names a dotfile; a
+// hidden directory in front, ".claude/projects"; and a working directory flattened into one name,
 // see flattenedPath, on its own or as any segment, the way the transcript
 // directory of Claude Code is listed with a session in it. Everything else
 // with a slash is prose or a name that merely looks like a path, "and/or",
@@ -472,7 +476,7 @@ func bareShape(tok string) bool {
 		return false
 	}
 	last := tok[strings.LastIndexByte(tok, '/')+1:]
-	if last == "" || first[0] == '.' || hasFileExt(last) {
+	if last == "" || first[0] == '.' || hasFileExt(last) || hiddenName(last) {
 		return true
 	}
 	for seg := range strings.SplitSeq(tok, "/") {
@@ -481,6 +485,18 @@ func bareShape(tok string) bool {
 		}
 	}
 	return false
+}
+
+// hiddenName reports whether seg is a hidden file or directory: a dot, a
+// letter and no second dot, ".gitignore", ".kunderc", ".config". A name
+// with a second dot, ".env.local", is a file name with an extension and
+// hasFileExt's business; "." and ".." name no file.
+func hiddenName(seg string) bool {
+	if len(seg) < 2 || seg[0] != '.' || strings.IndexByte(seg[1:], '.') >= 0 {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(seg[1:])
+	return unicode.IsLetter(r)
 }
 
 // flattenedRoots are the directories a working directory can begin with,

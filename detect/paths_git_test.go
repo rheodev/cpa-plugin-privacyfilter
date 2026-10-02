@@ -94,3 +94,41 @@ func TestPaths_DiffMarkerIsABoundary(t *testing.T) {
 		}
 	}
 }
+
+// A hidden name at the end of a bare path is a shape of its own. The hunk
+// header of a diff names the file, "@@ -24,3 +24,9 @@ kunde-x/docs/.gitignore",
+// and a dotfile without an extension carried neither an extension nor a
+// trailing slash, so such a path stayed outside the net. The common hidden
+// files of a repository and a home are on the preserve list, so the model
+// still sees which file it is looking at; an unknown one is a directory
+// as any name without an extension is.
+func TestPaths_HiddenNameEndsABarePath(t *testing.T) {
+	d := newPaths(t, detect.PathsConfig{ReplaceUnknown: true})
+	caught := map[string]string{
+		"@@ -24,3 +24,9 @@ " + r("kunde-x", "docs", ".gitignore"): "path_segment:kunde-x",
+		r("kunde-x", ".kunderc"):                                  "path_segment:kunde-x path_segment:.kunderc",
+		r("kunde-x", "sub", ".git"):                               "path_segment:kunde-x path_segment:sub",
+		"ls " + r("kunde-x", ".cache"):                            "path_segment:kunde-x",
+		"-" + r("kunde-x", ".editorconfig"):                       "path_segment:kunde-x",
+		j("home", "alice", "kunde-x", ".editorconfig"):            "path_segment:alice path_segment:kunde-x",
+		j("home", "alice", "kunde-x", ".kunderc"):                 "path_segment:alice path_segment:kunde-x path_segment:.kunderc",
+	}
+	for text, want := range caught {
+		got := d.Scan(text)
+		assertDisjointSorted(t, text, got)
+		if values(got) != want {
+			t.Errorf("Scan(%q) = %q, want %q", text, values(got), want)
+		}
+	}
+	for _, text := range []string{
+		"1/.5 and 3/.14",
+		"a/.b and x/.y",
+		"and/or. km/h.",
+		"kunde-x/.5",
+		"kunde-x/.-x",
+	} {
+		if got := d.Scan(text); len(got) != 0 {
+			t.Errorf("Scan(%q) = %q, want nothing", text, values(got))
+		}
+	}
+}
