@@ -146,7 +146,8 @@ func (d *pathsDetector) Name() string { return "paths" }
 // variable, "$HOME/…", and at a bare token whose shape says path, which
 // bareShape decides: a file extension at the end, a slash at the end, a
 // hidden directory in front, or a working directory flattened into one
-// name. It runs over segments of letters, digits and the characters ._-~@+%
+// name; inside quotes the shape is judged on the whole of the quoted text,
+// see pathStart. It runs over segments of letters, digits and the characters ._-~@+%
 // and ends at the first other character; an encoded space, "%20", inside a
 // segment divides it into words, see segments. A space ends the path unless
 // the text says the name goes on, see continued.
@@ -171,7 +172,8 @@ func (d *pathsDetector) Scan(text string) []Match {
 
 // continued returns where the path text[start:end] really ends when a
 // space inside a directory name is written the way a shell or a tool
-// writes it. pathEnd stops at a space; three forms say the name goes on.
+// writes it. pathEnd stops at a space; three forms say the name goes on,
+// and a bare path inside quotes is read whole as well, see pathStart.
 //
 // Quoted: the path begins right behind a quote, `cd "/srv/Kunden Akten"`,
 // and runs to the closing quote on the same line, see quotedEnd. Escaped:
@@ -337,7 +339,25 @@ func pathStart(text string, i int) (start, end int, ok bool) {
 		return 0, 0, false
 	}
 	end = pathEnd(text, i)
-	if end == i || !bareShape(text[i:end]) {
+	if end == i {
+		return 0, 0, false
+	}
+	// Inside quotes a bare path may carry a space, in its file name or in
+	// a directory behind the first, `"kunde/epub/Kunden und Akten.epub"`,
+	// the way git status prints such a path. The shape is then judged on
+	// the whole of the quoted text, as far as quotedEnd lets it run, so
+	// that the extension at its end counts although a space stands in
+	// front of it. The first segment has to be free of spaces, which is
+	// the case when the space-free run carries a slash of its own:
+	// `"fix kunde/x.go"` is a commit message, and its first word is no
+	// directory.
+	shape := text[i:end]
+	if q := quoteBefore(text, i); q != 0 && strings.IndexByte(shape, '/') >= 0 {
+		if e, ok := quotedEnd(text, i, q); ok && e > end {
+			shape = text[i:e]
+		}
+	}
+	if !bareShape(shape) {
 		return 0, 0, false
 	}
 	// The slash in front of a ">" closes a tag, "<br/>" and
