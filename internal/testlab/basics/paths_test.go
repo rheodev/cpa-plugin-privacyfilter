@@ -125,6 +125,56 @@ func TestPath_EncodedSpaceInALink(t *testing.T) {
 	}
 }
 
+// A directory with a space in its name, written the three ways a session
+// writes it: quoted in a shell command, escaped with a backslash, and bare
+// as the whole of a tool argument. Each word of the name gets its own
+// pseudonym, the space stays between them, so the model sees that the
+// name has a space and can quote or escape it as the command needs; and
+// whichever spelling it chooses comes back, because the words restore one
+// by one. Seen live: a `cd` in quotes went out with everything behind the
+// space in the clear, the deeper directories included.
+func TestPath_SpaceInADirectoryName(t *testing.T) {
+	d := newPaths(t, detect.PathsConfig{ReplaceUnknown: true})
+	tab := newTable(t)
+	quoted := `cd "/home/alice/Kunden Akten/Berichte/Promotion"`
+	mid := forward(quoted, d, tab)
+	alice, kunden, akten := tab.Lookup(detect.KindPathSegment, "alice"), tab.Lookup(detect.KindPathSegment, "Kunden"), tab.Lookup(detect.KindPathSegment, "Akten")
+	berichte, promotion := tab.Lookup(detect.KindPathSegment, "Berichte"), tab.Lookup(detect.KindPathSegment, "Promotion")
+	want := `cd "/home/` + alice + "/" + kunden + " " + akten + "/" + berichte + "/" + promotion + `"`
+	if mid != want {
+		t.Fatalf("forward(%q) = %q, want %q", quoted, mid, want)
+	}
+	if got := back(mid, tab); got != quoted {
+		t.Errorf("quoted round trip:\n  in %q\n out %q", quoted, got)
+	}
+	// The model rewrites the path escaped, or bare in a tool argument.
+	escaped := strings.ReplaceAll(strings.Trim(mid[3:], `"`), " ", `\ `)
+	if got, want := back("cd "+escaped, tab), `cd /home/alice/Kunden\ Akten/Berichte/Promotion`; got != want {
+		t.Errorf("escaped by the model:\n  in %q\n out %q\nwant %q", escaped, got, want)
+	}
+	bare := strings.Trim(mid[3:], `"`)
+	if got, want := back(bare, tab), "/home/alice/Kunden Akten/Berichte/Promotion"; got != want {
+		t.Errorf("bare in a tool argument:\n  in %q\n out %q\nwant %q", bare, got, want)
+	}
+	// The same directory written escaped or bare on the way in gets the
+	// same pseudonyms, so the model can tell that all three name one.
+	for _, text := range []string{
+		`cd /home/alice/Kunden\ Akten/Berichte/Promotion`,
+		"/home/alice/Kunden Akten/Berichte/Promotion",
+	} {
+		got := forward(text, d, tab)
+		if !strings.Contains(got, kunden) || !strings.Contains(got, akten) || !strings.Contains(got, promotion) {
+			t.Errorf("forward(%q) = %q, want the pseudonyms of the quoted form", text, got)
+		}
+		if strings.Contains(got, "Akten") || strings.Contains(got, "Promotion") {
+			t.Errorf("forward(%q) = %q, a word of the name went out in the clear", text, got)
+		}
+		if round := back(got, tab); round != text {
+			t.Errorf("round trip:\n  in %q\n out %q", text, round)
+		}
+	}
+}
+
 // The rule the project settled on: file names stay readable, directories do
 // not, and a term inside a file name is still found by the term layer.
 func TestPath_FileNamesStayReadable(t *testing.T) {

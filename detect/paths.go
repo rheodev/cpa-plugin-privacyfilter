@@ -148,7 +148,8 @@ func (d *pathsDetector) Name() string { return "paths" }
 // hidden directory in front, or a working directory flattened into one
 // name. It runs over segments of letters, digits and the characters ._-~@+%
 // and ends at the first other character; an encoded space, "%20", inside a
-// segment divides it into words, see segments.
+// segment divides it into words, see segments. A space ends the path unless
+// the text says the name goes on, see continued.
 func (d *pathsDetector) Scan(text string) []Match {
 	if text == "" || (!strings.Contains(text, "/") && !strings.Contains(text, "-")) {
 		return nil
@@ -161,10 +162,143 @@ func (d *pathsDetector) Scan(text string) []Match {
 			i += max(size, 1)
 			continue
 		}
+		end = continued(text, start, end)
 		out = d.segments(text, start, end, out)
 		i = end
 	}
 	return out
+}
+
+// continued returns where the path text[start:end] really ends when a
+// space inside a directory name is written the way a shell or a tool
+// writes it. pathEnd stops at a space; three forms say the name goes on.
+//
+// Quoted: the path begins right behind a quote, `cd "/srv/Kunden Akten"`,
+// and runs to the closing quote on the same line, see quotedEnd. Escaped:
+// a backslash and a space, "Kunden\ Akten", are the shell's own spelling
+// of a space in a name, and the path goes on behind them. Bare: a tool
+// argument holds the path and nothing else, "/srv/Kunden Akten/Berichte",
+// and the word behind the space carries a slash of its own, so it is the
+// rest of the same path, see continuesAfter. A space behind a word that
+// is not followed by a slash ends the path as before: the model's prose
+// after a path is prose, and a directory of three words, "Kunden und
+// Akten", keeps its middle word in the clear unless it is quoted or
+// escaped. The price of the bare form is a slashed word of prose right
+// behind a path, "/etc/x and/or y", which is read as the rest of it; the
+// round trip restores it, the model sees a pseudonym for a word.
+func continued(text string, start, end int) int {
+	if q := quoteBefore(text, start); q != 0 {
+		if e, ok := quotedEnd(text, start, q); ok {
+			return e
+		}
+	}
+	for end < len(text) {
+		switch {
+		case strings.HasPrefix(text[end:], `\ `):
+			next := pathEnd(text, end+2)
+			if next == end+2 {
+				return end
+			}
+			end = next
+		case text[end] == ' ' && continuesAfter(text, end):
+			end = pathEnd(text, end+1)
+		default:
+			return end
+		}
+	}
+	return end
+}
+
+// quoteBefore returns the quote that stands right in front of text[start],
+// a double quote, a single quote or a backtick, or zero. A shell variable
+// in front of the slash, `"$HOME/Kunden Akten"`, belongs to the path and
+// is skipped; the quote then has to stand in front of the dollar.
+func quoteBefore(text string, start int) byte {
+	j := start
+	if j > 0 && text[j-1] == '}' {
+		if open := strings.LastIndexByte(text[:j], '{'); open > 0 && text[open-1] == '$' {
+			j = open - 1
+		}
+	} else if variableBefore(text, j) {
+		for text[j-1] != '$' {
+			j--
+		}
+		j--
+	}
+	if j == 0 {
+		return 0
+	}
+	switch c := text[j-1]; c {
+	case '"', '\'', '`':
+		return c
+	}
+	return 0
+}
+
+// quotedEnd finds the end of a path that begins at text[start] behind the
+// quote q: the closing quote on the same line, or a "?" or "#" in front of
+// it, which begin the query and the fragment of a URL and end the path as
+// they do outside quotes. A space inside the quotes is part of the name,
+// except behind a word with a file extension: `"x.go: fix the test"` is a
+// file name and a sentence, and the path ends at that space. Whatever
+// stands between the last segment character and the end, the colon of
+// "x.go:", is not part of the path. Without a closing quote on the line
+// the form does not apply and ok is false.
+func quotedEnd(text string, start int, q byte) (end int, ok bool) {
+	ext := false // a word with a file extension has ended since the last slash
+	word := start
+	for j := start; j < len(text); j++ {
+		c := text[j]
+		if c < utf8.RuneSelf && !isSegmentRune(rune(c)) {
+			if word < j && hasFileExt(text[word:j]) {
+				ext = true
+			}
+			word = j + 1
+		}
+		switch {
+		case c == '\n':
+			return 0, false
+		case c == q && text[j-1] != '\\', c == '?', c == '#', c == ' ' && ext:
+			return trimDividers(text, start, j), true
+		case c == '/':
+			ext = false
+		}
+	}
+	return 0, false
+}
+
+// trimDividers moves end back over the characters at the end of
+// text[start:end] that are neither segment characters nor slashes.
+func trimDividers(text string, start, end int) int {
+	for end > start {
+		r, size := utf8.DecodeLastRuneInString(text[start:end])
+		if r == '/' || isSegmentRune(r) {
+			break
+		}
+		end -= size
+	}
+	return end
+}
+
+// continuesAfter reports whether the path that ends at the space text[sp]
+// goes on behind it: the word behind the space carries a slash inside, is
+// no path of its own, which would stand on its own anyway, and the word in
+// front of the space is neither a file name nor the end of a sentence.
+func continuesAfter(text string, sp int) bool {
+	before := text[:sp]
+	if last := before[len(before)-1]; last == '/' || last == '.' {
+		return false
+	}
+	i := strings.LastIndexAny(before, "/ ")
+	if hasFileExt(before[i+1:]) {
+		return false
+	}
+	word := text[sp+1 : pathEnd(text, sp+1)]
+	if word == "" || word[0] == '/' || strings.HasPrefix(word, "./") ||
+		strings.HasPrefix(word, "../") || strings.HasPrefix(word, "~/") {
+		return false
+	}
+	return strings.IndexByte(word, '/') > 0 && !strings.Contains(word, "//") && !bareShape(word)
 }
 
 // pathStart reports whether a path begins at text[i] and where it ends.
@@ -349,8 +483,9 @@ func isSegmentRune(r rune) bool {
 
 // segments appends one match per reportable segment of text[start:end]. A
 // segment is divided at an encoded space, "%20", the way a Markdown link
-// writes a directory with a space in its name, and the words on either side
-// are reported on their own with the encoded space left standing between
+// writes a directory with a space in its name, and at a real space or an
+// escaped one where continued let the path run over it; the words on either
+// side are reported on their own with the space left standing between
 // them. The model then sees "d-…%20d-…", knows there is a space to decode,
 // and both words come back whether it decodes or not. A segment replaced
 // whole would hide the encoding behind one pseudonym: the model, seeing no
@@ -378,18 +513,41 @@ func (d *pathsDetector) segments(text string, start, end int, out []Match) []Mat
 		// it: the extension sits on its last word, and the words in front
 		// are parts of the same file name, not directories.
 		file := last && hasFileExt(seg)
-		wordStart := pos
-		for word := range strings.SplitSeq(seg, encodedSpace) {
-			if kind, ok := d.classify(word, file); ok {
-				out = append(out, Match{
-					Start:  start + wordStart,
-					End:    start + wordStart + len(word),
-					Value:  word,
-					Kind:   kind,
-					Source: "paths",
-				})
+		// The words of a segment are its runs of segment characters,
+		// divided at an encoded space; whatever stands between them, a
+		// space, a backslash, an ampersand, a bracket, stays as it is. A
+		// word without a letter or a digit, a lone dash, is nothing to
+		// replace.
+		for i := 0; i < len(seg); {
+			r, size := utf8.DecodeRuneInString(seg[i:])
+			if !isSegmentRune(r) {
+				i += size
+				continue
 			}
-			wordStart += len(word) + len(encodedSpace)
+			j := i + size
+			for j < len(seg) {
+				r, size := utf8.DecodeRuneInString(seg[j:])
+				if !isSegmentRune(r) {
+					break
+				}
+				j += size
+			}
+			wordStart := pos + i
+			for word := range strings.SplitSeq(seg[i:j], encodedSpace) {
+				if strings.IndexFunc(word, isTokenRune) >= 0 {
+					if kind, ok := d.classify(word, file); ok {
+						out = append(out, Match{
+							Start:  start + wordStart,
+							End:    start + wordStart + len(word),
+							Value:  word,
+							Kind:   kind,
+							Source: "paths",
+						})
+					}
+				}
+				wordStart += len(word) + len(encodedSpace)
+			}
+			i = j
 		}
 		if next < 0 {
 			break

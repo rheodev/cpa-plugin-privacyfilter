@@ -297,6 +297,79 @@ func TestPaths_EncodedSpaceDividesASegment(t *testing.T) {
 	}
 }
 
+// A real space inside a directory name. A shell writes it in quotes or
+// behind a backslash, a tool argument holds the path and nothing else, and
+// all three forms are read as one path: each word of the name gets a
+// pseudonym of its own, and the space, the backslash, the ampersand stay
+// between them. Where nothing says the name goes on, the space ends the
+// path as it always did, so prose behind a path is prose; the middle word
+// of a bare three-word name is the limit, and a slashed word of prose right
+// behind a bare path is the price.
+func TestPaths_SpaceInsideADirectoryName(t *testing.T) {
+	d := newPaths(t, detect.PathsConfig{ReplaceUnknown: true})
+	const name = "path_segment:alice path_segment:Kunden path_segment:Akten path_segment:Berichte"
+	cases := map[string]string{
+		// Quoted: the path runs to the closing quote on the line.
+		`cd "/home/alice/Kunden Akten/Berichte"`:         name,
+		`cd '/home/alice/Kunden Akten/Berichte'`:         name,
+		"ls `/home/alice/Kunden Akten/Berichte`":         name,
+		`"/home/alice/Müller & Söhne/Berichte"`:          "path_segment:alice path_segment:Müller path_segment:Söhne path_segment:Berichte",
+		`"/home/alice/Akten (2023)/notiz.md"`:            "path_segment:alice path_segment:Akten",
+		`-v "/home/alice/Kunden Akten:/Ablage"`:          "path_segment:alice path_segment:Kunden path_segment:Akten path_segment:Ablage",
+		`{"file_path": "/home/alice/Kunden Akten/x.md"}`: "path_segment:alice path_segment:Kunden path_segment:Akten",
+		`"$HOME/Kunden Akten"`:                           "path_segment:Kunden path_segment:Akten",
+		`"${HOME}/Kunden Akten"`:                         "path_segment:Kunden path_segment:Akten",
+		`"/home/alice/x.go: fix the test"`:               "path_segment:alice",                // a file name ends the path
+		`"/home/alice/x.go:"`:                            "path_segment:alice",                // and the colon is not part of it
+		`"/home/alice/x?a=b c"`:                          "path_segment:alice path_segment:x", // the query ends it
+		`"/home/alice/Kunden Akten`:                      "path_segment:alice path_segment:Kunden",
+		`"/home/alice/a b" "/home/alice/c d"`:            "path_segment:alice path_segment:a path_segment:b path_segment:alice path_segment:c path_segment:d",
+		"\"/home/alice/Kunden\nAkten/x\"":                "path_segment:alice path_segment:Kunden",
+		// Escaped: the shell's own spelling of a space in a name.
+		`cd /home/alice/Kunden\ Akten/Berichte`: name,
+		`cd /home/alice/Kunden\ `:               "path_segment:alice path_segment:Kunden",
+		// Bare: the word behind the space carries a slash of its own.
+		`/home/alice/Kunden Akten/Berichte`:          name,
+		`/home/alice/Kunden Akten/Berichte/notiz.md`: name,
+		`/home/alice/Kunden und Akten/Berichte`:      "path_segment:alice path_segment:Kunden", // the limit
+		`cp /home/alice/a.txt backup/x`:              "path_segment:alice",
+		`mv /home/alice/a /home/alice/b`:             "path_segment:alice path_segment:a path_segment:alice path_segment:b",
+		`/home/alice/x und https://example.com/y`:    "path_segment:alice path_segment:x",
+		`/home/alice/x. Dann/oder`:                   "path_segment:alice path_segment:x",
+		`/home/alice/x ./y/z`:                        "path_segment:alice path_segment:x path_segment:y path_segment:z",
+		`/home/alice/x TCP/IP`:                       "path_segment:alice path_segment:x path_segment:TCP path_segment:IP", // the price
+	}
+	for text, want := range cases {
+		got := d.Scan(text)
+		assertDisjointSorted(t, text, got)
+		if values(got) != want {
+			t.Errorf("Scan(%q) = %q, want %q", text, values(got), want)
+		}
+	}
+	// What stands between the words stays: the space, the escaped space.
+	for text, between := range map[string]string{
+		`cd "/home/alice/Kunden Akten/Berichte"`: " ",
+		`cd /home/alice/Kunden\ Akten/Berichte`:  `\ `,
+		`/home/alice/Kunden Akten/Berichte`:      " ",
+	} {
+		got := d.Scan(text)
+		if len(got) != 4 || text[got[1].End:got[2].Start] != between {
+			t.Errorf("Scan(%q): between Kunden and Akten stands %q, want %q", text, text[got[1].End:got[2].Start], between)
+		}
+	}
+	// The words of a file name with a space belong to the file name.
+	all := newPaths(t, detect.PathsConfig{ReplaceUnknown: true, AllFilenames: true})
+	text := `"/home/alice/Kunden Akten/Bericht final.md"`
+	got := all.Scan(text)
+	assertDisjointSorted(t, text, got)
+	if want := "path_segment:alice path_segment:Kunden path_segment:Akten filename:Bericht filename:final.md"; values(got) != want {
+		t.Fatalf("AllFilenames: Scan(%q) = %q, want %q", text, values(got), want)
+	}
+	if got := d.Scan(text); values(got) != "path_segment:alice path_segment:Kunden path_segment:Akten" {
+		t.Fatalf("Scan(%q) = %q, want the file name left alone", text, values(got))
+	}
+}
+
 // The slash of a tag is not a path: "</p>" is markup, and so are
 // "</div></section>" and the self-closing "<br/>" and "<input disabled/>",
 // whose slash would otherwise pass as the trailing slash of a directory.
