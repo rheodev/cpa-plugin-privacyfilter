@@ -308,6 +308,11 @@ func pathStart(text string, i int) (start, end int, ok bool) {
 	var prev rune
 	if i > 0 {
 		prev, _ = utf8.DecodeLastRuneInString(text[:i])
+		// The marker of a diff line is a boundary, not the character in
+		// front of the path.
+		if diffMarker(text, i-1) {
+			prev = '\n'
+		}
 	}
 	rest := text[i:]
 	switch {
@@ -334,8 +339,9 @@ func pathStart(text string, i int) (start, end int, ok bool) {
 	}
 	// A bare token begins only at a token boundary. Behind a segment
 	// character it is the tail of a longer token, "example.com/x" seen from
-	// the "com"; behind a dollar it is the name of a variable.
-	if isSegmentRune(prev) || prev == '$' {
+	// the "com"; behind a dollar it is the name of a variable. The marker
+	// of a diff line is no token: the path begins behind it.
+	if isSegmentRune(prev) || prev == '$' || diffMarker(text, i) {
 		return 0, 0, false
 	}
 	end = pathEnd(text, i)
@@ -366,6 +372,42 @@ func pathStart(text string, i int) (start, end int, ok bool) {
 		return 0, 0, false
 	}
 	return i, end, true
+}
+
+// diffMarker reports whether text[i] is the marker of a diff line: a "+"
+// or a "-" at the start of a line with a path right behind it, the way
+// git diff prints an added or a removed line that holds a path,
+// "+/home/alice/kunde/x.go" or "-kunde-x/build/". The marker is not part
+// of the path. Without this rule "+" and "-", segment characters both,
+// glue themselves to what follows: the anchored path is not recognised
+// at all, because its slash stands behind a segment character, and the
+// bare one begins with "+kunde-x", which gets a pseudonym of its own
+// while the marker vanishes from the model's view, an added line read
+// as context. A flag, "-la", "--no-verify", a flattened working
+// directory, "-home-alice-kunde-x", and the "---" of a diff header have
+// no path behind their first character and are what they were.
+func diffMarker(text string, i int) bool {
+	if (text[i] != '+' && text[i] != '-') || (i > 0 && text[i-1] != '\n') || i+1 >= len(text) {
+		return false
+	}
+	rest := text[i+1:]
+	switch {
+	case strings.HasPrefix(rest, "//"):
+		return false
+	case rest[0] == '/', strings.HasPrefix(rest, "~/"), strings.HasPrefix(rest, "./"), strings.HasPrefix(rest, "../"):
+		return true
+	}
+	end := pathEnd(text, i+1)
+	if end == i+1 {
+		return false
+	}
+	// A flattened working directory begins with a dash of its own,
+	// "-home-alice-kunde-x/abc.jsonl": the dash is the first character of
+	// the name, not a marker in front of it.
+	if first, _, _ := strings.Cut(text[i:end], "/"); flattenedPath(first) {
+		return false
+	}
+	return bareShape(text[i+1 : end])
 }
 
 // variableBefore reports whether the word in front of the slash at text[i]

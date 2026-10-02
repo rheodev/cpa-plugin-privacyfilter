@@ -40,3 +40,34 @@ func TestPath_QuotedBarePathInGitStatus(t *testing.T) {
 		}
 	}
 }
+
+// jp and rp join bare segments into an absolute and a relative path at run
+// time, for the reason the package comment of the detect tests gives.
+func jp(segs ...string) string { return "/" + strings.Join(segs, "/") }
+func rp(segs ...string) string { return strings.Join(segs, "/") }
+
+// A diff goes out with its paths replaced and its markers where they were,
+// an added line still an added line, and comes back as it was. The "a/"
+// and "b/" of the header stay in the clear, the limit the README names.
+func TestPath_DiffLinesRoundTrip(t *testing.T) {
+	d := newPaths(t, detect.PathsConfig{ReplaceUnknown: true})
+	tab := newTable(t)
+	x := rp("kunde-x", "x.go")
+	head := "--- a/" + x + "\n+++ b/" + x + "\n@@ -1,2 +1,3 @@\n"
+	diff := head +
+		"+" + jp("home", "alice", "kunde-x", "x.go") + "\n" +
+		"-" + rp("kunde-x", "build", "") + "\n" +
+		" " + jp("home", "alice", "kunde-x", "z.go") + "\n"
+	mid := forward(diff, d, tab)
+	alice, kunde := tab.Lookup(detect.KindPathSegment, "alice"), tab.Lookup(detect.KindPathSegment, "kunde-x")
+	want := head +
+		"+" + jp("home", alice, kunde, "x.go") + "\n" +
+		"-" + rp(kunde, "build", "") + "\n" +
+		" " + jp("home", alice, kunde, "z.go") + "\n"
+	if mid != want {
+		t.Fatalf("forward:\n  in %q\n out %q\nwant %q", diff, mid, want)
+	}
+	if got := back(mid, tab); got != diff {
+		t.Errorf("round trip:\n  in %q\n out %q", diff, got)
+	}
+}
