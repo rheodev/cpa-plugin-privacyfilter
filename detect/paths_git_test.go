@@ -18,6 +18,8 @@ import (
 func TestPaths_QuotedBarePathWithASpace(t *testing.T) {
 	d := newPaths(t, detect.PathsConfig{ReplaceUnknown: true})
 	cases := map[string]string{
+		`"detect/paths: fix paths.go"`:                     "", // a colon says prose follows
+		`"kunde-x/Kunden Akten/x.md: fix the test"`:        "path_segment:kunde-x path_segment:Kunden path_segment:Akten",
 		` M "kunde-x/epub/Kunden und Akten.epub"`:          "path_segment:kunde-x path_segment:epub",
 		` M "kunde-x/site/Kunden Akten/Bericht final.pdf"`: "path_segment:kunde-x path_segment:site path_segment:Kunden path_segment:Akten",
 		`'kunde-x/Kunden Akten/notiz.md'`:                  "path_segment:kunde-x path_segment:Kunden path_segment:Akten",

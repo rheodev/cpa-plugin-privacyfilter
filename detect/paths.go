@@ -359,11 +359,16 @@ func pathStart(text string, i int) (start, end int, ok bool) {
 	// front of it. The first segment has to be free of spaces, which is
 	// the case when the space-free run carries a slash of its own:
 	// `"fix kunde/x.go"` is a commit message, and its first word is no
-	// directory.
+	// directory. A colon ends the text the shape is judged on, because
+	// it says that prose follows: `"detect/paths: fix paths.go"` is a
+	// commit message too, not a path with a space in its file name.
 	shape := text[i:end]
 	if q := quoteBefore(text, i); q != 0 && strings.IndexByte(shape, '/') >= 0 {
 		if e, ok := quotedEnd(text, i, q); ok && e > end {
 			shape = text[i:e]
+			if c := strings.IndexByte(shape, ':'); c >= 0 {
+				shape = shape[:c]
+			}
 		}
 	}
 	if !bareShape(shape) {
