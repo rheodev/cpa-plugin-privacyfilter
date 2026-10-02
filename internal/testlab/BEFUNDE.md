@@ -1,6 +1,6 @@
 # Befunde aus dem Testlabor
 
-Von einundzwanzig Befunden sind zwanzig behoben; der offene, die Lücke im Netz der Pfadebene, ist zum größeren Teil geschlossen: die Pfadebene erkennt bloße Pfade an ihrer Form, offen bleiben der bloße Verzeichnispfad ohne Datei, der Diff-Kopf, Adressen und Windows, und die stehen im README als Grenze. Der zwanzigste kam aus dem Betrieb: das kodierte Leerzeichen eines Markdown-Links machte ein Verzeichnis für das Modell undurchsichtig, behoben mit `c769892`. Der einundzwanzigste auch: das wörtliche Leerzeichen eines Verzeichnisnamens beendete den Pfad, und alles dahinter ging im Klartext hinaus, behoben mit `db0a173`. Als Grenze angenommen ist auch die Versalschrift mit SS. Das einzelne Surrogat im Stream bleibt als Abwägung stehen. Die zwei Befunde, die eine Kommandozeile verfälschen konnten, sind schärfer kuriert als vorgeschlagen: der Lader weist einen Wert mit Sonderzeichen beim Start ab und nennt die Zeile, statt nur zu warnen, eine Entscheidung des Nutzers. Die zehn Tests des Pakets `harm` bleiben rot und überspringen sich weiter, denn sie zeigen die Wirkung eines Wertes, den der Lader nicht mehr durchlässt; sie sind Dokumentation, keine Forderung. Die Kuren, in der Reihenfolge des nächsten Kapitels: die sieben von je einer Zeile, die drei Lecks mit Entscheidung, die Schlüsselnamen und doppelten Schlüssel im JSON mit dem gemeinsamen Scanner, die Verfälschungen im Stream, und die Härtung: Wortgrenzen für Regex-Terme, Adressmuster in Zahlenketten, verklebte Ersatzwerte, der Netz-Term mit kaputtem Platzhalter und die fünf Prüfungen an der Konfiguration. Die Kapitel dazu sind stehen geblieben und tragen den Vermerk, womit sie behoben wurden; das offene trägt wie zuvor seinen Test und den Vorschlag. Jedes Kapitel nennt Ursache, Fundort, Reproduktion und Vorschlag genau genug, dass eine andere Sitzung sie abarbeiten kann, ohne diese hier gelesen zu haben; die Reihenfolge steht im nächsten Kapitel.
+Von vierundzwanzig Befunden sind dreiundzwanzig behoben; der offene, die Lücke im Netz der Pfadebene, ist zum größeren Teil geschlossen: die Pfadebene erkennt bloße Pfade an ihrer Form, offen bleiben der bloße Verzeichnispfad ohne Datei, der Diff-Kopf, Adressen und Windows, und die stehen im README als Grenze. Der zwanzigste kam aus dem Betrieb: das kodierte Leerzeichen eines Markdown-Links machte ein Verzeichnis für das Modell undurchsichtig, behoben mit `c769892`. Der einundzwanzigste auch: das wörtliche Leerzeichen eines Verzeichnisnamens beendete den Pfad, und alles dahinter ging im Klartext hinaus, behoben mit `db0a173`. Die drei danach kamen aus einem Fehlerbericht vom 2. Oktober, der dieselben Namen in einer Sitzung mal ersetzt und mal im Klartext sah: der bloße Pfad in Anführungszeichen, den `git status` für einen Namen mit Leerzeichen schreibt, endete am Leerzeichen (`3228fd5`, `6a95bee`), das Vorzeichen einer Diff-Zeile klebte am Pfad (`e39435c`), und ein versteckter Name am Ende eines bloßen Pfades zählte nicht als Form (`9d14e5a`). Als Grenze angenommen ist auch die Versalschrift mit SS. Das einzelne Surrogat im Stream bleibt als Abwägung stehen. Die zwei Befunde, die eine Kommandozeile verfälschen konnten, sind schärfer kuriert als vorgeschlagen: der Lader weist einen Wert mit Sonderzeichen beim Start ab und nennt die Zeile, statt nur zu warnen, eine Entscheidung des Nutzers. Die zehn Tests des Pakets `harm` bleiben rot und überspringen sich weiter, denn sie zeigen die Wirkung eines Wertes, den der Lader nicht mehr durchlässt; sie sind Dokumentation, keine Forderung. Die Kuren, in der Reihenfolge des nächsten Kapitels: die sieben von je einer Zeile, die drei Lecks mit Entscheidung, die Schlüsselnamen und doppelten Schlüssel im JSON mit dem gemeinsamen Scanner, die Verfälschungen im Stream, und die Härtung: Wortgrenzen für Regex-Terme, Adressmuster in Zahlenketten, verklebte Ersatzwerte, der Netz-Term mit kaputtem Platzhalter und die fünf Prüfungen an der Konfiguration. Die Kapitel dazu sind stehen geblieben und tragen den Vermerk, womit sie behoben wurden; das offene trägt wie zuvor seinen Test und den Vorschlag. Jedes Kapitel nennt Ursache, Fundort, Reproduktion und Vorschlag genau genug, dass eine andere Sitzung sie abarbeiten kann, ohne diese hier gelesen zu haben; die Reihenfolge steht im nächsten Kapitel.
 
 Die Tests liegen im Repository. `internal/testlab/` trägt sie in fünf Paketen — `basics`, `layers`, `harm`, `props`, `config` — samt dem gemeinsamen Helfer `lab`; die Proben der JSON-Ebene stehen neben `payload`, die des Streams im Wurzelpaket neben `stream.go`. Gegen dieses laufen sie jetzt wirklich: der Nachbau, den das Labor brauchte, solange es ein eigenes Modul neben dem Klon war, ist weg, und siebzehn der neunzehn Stream-Proben halten gegen das Original genau so wie gegen den Nachbau.
 
@@ -345,6 +345,60 @@ Kur: das wörtliche Leerzeichen wird wie das kodierte behandelt. Jedes Wort des 
 Verworfen: der ganze Wert als Pfad, sobald er mit einem Pfad beginnt, weil ein Prosawert wie „/etc/hosts prüfen und Eintrag ergänzen“ seine Wörter als Verzeichnisnamen gehasht bekäme; eine Liste von Werkzeugargumenten, die als Ganzes ein Pfad sind, weil unter dem `input` eines Werkzeugs kein Schlüsselname urteilt; und das Weiterlaufen über mehrere Wörter bis zum nächsten mit Schrägstrich, weil „Move detect/paths.go into pkg/detect“ dann ein Pfad wäre. Als Grenze bleibt der bloße Name aus drei Wörtern im ganzen Wert, dessen mittleres stehen bleibt, und der Pfad hinter einer Option in Anführungszeichen, `"--out=/home/alice/Kunden Akten"`, den die Ebene als bloßen liest; als Preis das Schrägstrich-Wort der Prosa direkt hinter einem bloßen Pfad, das als dessen Rest gilt und unverändert zurückkommt. Das README nennt alle drei.
 
 Behoben mit `db0a173`.
+
+---
+
+# Ein bloßer Pfad in Anführungszeichen endet am Leerzeichen
+
+`git status` setzt einen Pfad mit Leerzeichen in Anführungszeichen, ` M "kunde-x/epub/Kunden und Akten.epub"`, und schreibt ihn ohne Anker wie jeden relativen Pfad. Die Pfadebene beurteilte das bloße Token bis zum ersten Leerzeichen, `kunde-x/epub/Kunden`, fand weder Endung noch Schrägstrich am Ende und ließ die Zeile im Klartext, neben den Zeilen ohne Anführungszeichen, deren Verzeichnisse sie ersetzt hatte. Die Zitatregel aus `db0a173` kam nie zum Zug: sie lief erst, wenn ein Pfad begonnen hatte, und über den Beginn eines bloßen Tokens entschied allein seine Form.
+
+Gefunden über den Fehlerbericht vom 2. Oktober: in einem Git-Status standen ersetzte und unersetzte Zeilen zu demselben Verzeichnis nebeneinander, und das eine Vorkommen im Klartext löste die Pseudonyme daneben auf.
+
+Reproduktion: `TestPaths_QuotedBarePathWithASpace` in `detect` hält die Formen fest, den Dateinamen aus drei Wörtern, das Verzeichnis mit Leerzeichen hinter dem ersten Segment, die drei Anführungszeichen, das Werkzeugargument in JSON, die Commit-Nachricht und die Grenzen; `TestPath_QuotedBarePathInGitStatus` im Paket `basics` schickt den Status durch Hin- und Rückweg und lässt das Modell die Datei zitiert und maskiert nennen.
+
+Gewicht: ein Leck, das zugleich die Zuordnung verrät. Jede Datei mit Leerzeichen im Namen oder in einem Verzeichnis darüber stand im Status im Klartext, und weil `git status` die übrigen Pfade desselben Baums ohne Anführungszeichen schreibt, standen Original und Pseudonym desselben Verzeichnisses in einer Ausgabe.
+
+Kur: steht ein Anführungszeichen unmittelbar vor dem Token und trägt der Lauf bis zum ersten Leerzeichen einen Schrägstrich, wird die Form über den Text bis zum schließenden Anführungszeichen beurteilt, wie `quotedEnd` ihn abgrenzt; Endung oder Schrägstrich am Ende zählen dann, obwohl ein Leerzeichen davor steht. Das erste Segment muss ohne Leerzeichen sein, damit `"fix kunde-x/x.go"` eine Commit-Nachricht bleibt, deren erstes Wort ein Wort ist, und ein Doppelpunkt beendet den beurteilten Text, damit `"detect/paths: fix paths.go"` eine bleibt. Ein zitierter bloßer Verzeichnispfad ohne Datei und ohne Schrägstrich am Ende bleibt außerhalb des Netzes wie der unzitierte.
+
+Verworfen: jeden zitierten Text mit Schrägstrich als Pfad zu lesen, weil dann jede Commit-Nachricht und jede zitierte Fehlermeldung mit einem Schrägstrich-Wort ihre Wörter als Verzeichnisse gehasht bekäme. Als Preis bleibt der zitierte Satz, der mit einem Schrägstrich-Wort beginnt und ohne Doppelpunkt in einem Dateinamen endet, `"kunde/sub siehe x.go"`; sein erstes Wort geht als Verzeichnispseudonym hinaus und kommt zurück, wie es war.
+
+Behoben mit `3228fd5` und `6a95bee`.
+
+---
+
+# Das Vorzeichen einer Diff-Zeile klebt am Pfad
+
+`git diff` schreibt eine hinzugefügte oder entfernte Zeile mit ihrem Vorzeichen direkt vor dem Inhalt, `+/home/alice/kunde-x/x.go`, `-kunde-x/build/`. Plus und Minus sind Segmentzeichen, wegen `lost+found`, `c++` und der plattgedrückten Verzeichnisnamen, und so klebte das Vorzeichen am Pfad. Mit Anker war der Pfad gar keiner, weil sein Schrägstrich hinter einem Segmentzeichen stand, und die Zeile ging im Klartext hinaus, während die Kontextzeile mit führendem Leerzeichen darunter ersetzt wurde. Ohne Anker war `+kunde-x/build/` ein bloßer Pfad mit `+kunde-x` als erstem Segment: es bekam ein eigenes Pseudonym, verschieden von dem für `kunde-x`, und das Modell las eine hinzugefügte Zeile als Kontext, weil das Plus im Pseudonym verschwunden war.
+
+Derselbe Fehlerbericht zeigte es am Diff einer `.gitignore`: zwei hinzugefügte Zeilen kamen ohne Plus und mit einem zweiten Pseudonym für dasselbe Verzeichnis beim Modell an. Den verankerten Pfad hinter dem Vorzeichen fand erst der Test.
+
+Reproduktion: `TestPaths_DiffMarkerIsABoundary` in `detect` hält die Formen fest, beide Vorzeichen vor einem Pfad mit Schrägstrich, Tilde oder Punkten als Anker und vor einem bloßen, die Kontextzeile, den Diff-Kopf, die Flags und das plattgedrückte Verzeichnis mit und ohne Vorzeichen; `TestPath_DiffLinesRoundTrip` im Paket `basics` schickt einen Diff mit Kopf und Hunk durch Hin- und Rückweg und prüft, dass jede Zeile ihr Vorzeichen behält.
+
+Gewicht: ein Leck und eine Verfälschung. Jede Diff-Zeile mit einem verankerten Pfad ging im Klartext hinaus, und jede mit einem bloßen kam ohne Vorzeichen an. Schreibt das Modell das Pseudonym von `+kunde-x` in eine Datei, stellt der Rückweg daraus `+kunde-x` her, mit dem Plus im Verzeichnisnamen.
+
+Kur: ein Plus oder Minus am Zeilenanfang mit einem Pfad direkt dahinter ist eine Grenze. `diffMarker` erkennt es, `pathStart` liest das Zeichen davor als Zeilenumbruch und beginnt kein Token am Vorzeichen; der Pfad beginnt dahinter, und das Vorzeichen bleibt, wo es war. Eine Flag, die Kopfzeilen `---` und `+++` und ein plattgedrücktes Arbeitsverzeichnis, das mit einem eigenen Bindestrich beginnt, sind, was sie waren; vor einem plattgedrückten Namen ist ein Vorzeichen ein Vorzeichen.
+
+Verworfen: Plus und Minus aus den Segmentzeichen zu nehmen, weil `lost+found`, `c++` und die plattgedrückten Namen sie brauchen; und das Vorzeichen überall vor einem Pfad als Grenze zu lesen, nicht nur am Zeilenanfang, weil `+kunde-x/x.go` mitten in der Zeile, im Wort-Diff oder in Prosa, auch ein Token sein kann. Als Grenze bleibt der Diff-Kopf, `--- a/kunde-x/x.go`, dessen Einbuchstabenpräfix im README steht.
+
+Behoben mit `e39435c`.
+
+---
+
+# Ein versteckter Name beendet keinen bloßen Pfad
+
+Der Hunk-Kopf eines Diffs nennt die Datei, zu der der Hunk gehört, `@@ -24,3 +24,9 @@ kunde-x/docs/.gitignore`, und ein Verzeichnis mit einer Punktdatei am Ende, `kunde-x/.kunderc`, schreibt `git status` genauso. Die Form eines bloßen Pfades verlangte am Ende eine Endung oder einen Schrägstrich, und ein versteckter Name ohne zweiten Punkt hat beides nicht: `.gitignore` ist für `hasFileExt` keine Endung, weil der Punkt vorn steht. Der Pfad davor blieb im Klartext, zwei Zeilen unter denselben Verzeichnissen als Pseudonym.
+
+Im selben Bericht stand der Hunk-Kopf eines Diffs im Klartext, dessen erstes Verzeichnis sonst überall ersetzt war.
+
+Reproduktion: `TestPaths_HiddenNameEndsABarePath` in `detect` hält den Hunk-Kopf, die Punktdatei hinter einem und hinter zwei Verzeichnissen, das Vorzeichen davor und die Gegenbeispiele fest, die Zahl hinter dem Punkt und das Satzende hinter dem Schrägstrich-Wort.
+
+Gewicht: ein Leck, bei jedem Diff eines Repositorys mit einer Punktdatei, denn der Hunk-Kopf nennt den Pfad in jedem Hunk, und bei jeder Auflistung einer Punktdatei in bloßer Form.
+
+Kur: ein versteckter Name am Ende, ein Punkt, ein Buchstabe und kein zweiter Punkt, ist eine fünfte Form des bloßen Pfades. Dazu stehen die üblichen versteckten Dateien eines Repositorys und eines Heimverzeichnisses auf der Bewahrliste, damit das Modell sieht, welche Datei es vor sich hat; bis dahin machte die Ebene aus einer solchen Datei am Ende eines verankerten Pfades ein Verzeichnispseudonym, weil ein Name ohne Endung als Verzeichnis gilt. Ein unbekannter versteckter Name bleibt ein Verzeichnis.
+
+Verworfen: nichts. Als Grenze bleibt das versteckte Verzeichnis mit Punkt im Namen am Anfang, `.hidden.dir/x`, das im README steht.
+
+Behoben mit `9d14e5a`.
 
 ---
 
