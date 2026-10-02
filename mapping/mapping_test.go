@@ -159,6 +159,13 @@ func TestRestorer_TokenBoundary(t *testing.T) {
 		"(ipv4:10.0.0.1:0)":             "(10.0.0.1)",
 		"\"person:Ruth:0\"":             "\"Ruth\"",
 		"ipv4:10.0.0.1:0/person:Ruth:0": "10.0.0.1/Ruth",
+		// A percent-escape in front delimits although it ends in a hex
+		// digit; a digit without the percent sign binds, and so does an
+		// escape that is none, "%2G".
+		"%20person:Ruth:0":      "%20Ruth",
+		"a%2Fperson:Ruth:0%2Fb": "a%2FRuth%2Fb",
+		"20person:Ruth:0":       "20person:Ruth:0",
+		"%2Gperson:Ruth:0":      "%2Gperson:Ruth:0",
 	}
 	for in, want := range cases {
 		if got, _ := r.Restore(in, false); got != want {
@@ -383,7 +390,7 @@ func TestRestorer_HoldbackKeepsCompletePseudonym(t *testing.T) {
 	}
 	// Delivered through a Tail, fragment by fragment, the text restores
 	// exactly as the whole text would, wherever it is cut.
-	for _, text := range []string{"/home/" + a + "/src", "say P ", "say PQ", "/home/" + a + "x", "say PQx"} {
+	for _, text := range []string{"/home/" + a + "/src", "say P ", "say PQ", "/home/" + a + "x", "say PQx", "x%20" + a + "%20" + a, "%20" + a} {
 		whole, _ := r.Restore(text, false)
 		for cut := 1; cut < len(text); cut++ {
 			tail := mapping.NewTail(r)

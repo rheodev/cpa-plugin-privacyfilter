@@ -329,9 +329,11 @@ func isWordRune(r rune) bool {
 }
 
 // hasWordBoundaries reports whether [start, end) is delimited on both sides by
-// a non-word rune or by the edge of text.
+// a non-word rune or by the edge of text. A percent-escape in front, the
+// "%20" of an encoded path, delimits as well although it ends in a hex
+// digit; see PercentEscapeEnds.
 func hasWordBoundaries(text string, start, end int) bool {
-	if start > 0 {
+	if start > 0 && !PercentEscapeEnds(text[:start]) {
 		if r, _ := utf8.DecodeLastRuneInString(text[:start]); isWordRune(r) {
 			return false
 		}
@@ -353,11 +355,11 @@ func isTokenRune(r rune) bool {
 }
 
 // hasTokenBoundaries reports whether [start, end) is delimited on both sides by
-// a rune that is neither a letter nor a digit, or by the edge of text. It is
-// the boundary rule of the structural layer; hasWordBoundaries is the stricter
-// rule of the maintained list.
+// a rune that is neither a letter nor a digit, by a percent-escape in front,
+// or by the edge of text. It is the boundary rule of the structural layer;
+// hasWordBoundaries is the stricter rule of the maintained list.
 func hasTokenBoundaries(text string, start, end int) bool {
-	if start > 0 {
+	if start > 0 && !PercentEscapeEnds(text[:start]) {
 		if r, _ := utf8.DecodeLastRuneInString(text[:start]); isTokenRune(r) {
 			return false
 		}

@@ -247,6 +247,14 @@ func TestTerms_WordBoundary(t *testing.T) {
 	if got := d.Scan("nuc-lan"); len(got) != 2 {
 		t.Fatalf("Scan = %+v, want the hyphen to count as a boundary", got)
 	}
+	// A percent-escape delimits: a term behind the "%20" of an encoded path
+	// is found although the hex digit in front of it would bind.
+	if got := d.Scan("[x](Kunden%20nuc/x.md) nuc%2Fetc 100%20nuc"); len(got) != 3 {
+		t.Fatalf("Scan = %+v, want nuc three times behind percent-escapes", got)
+	}
+	if got := d.Scan("20nuc x%2Gnuc"); len(got) != 0 {
+		t.Fatalf("Scan = %+v, want nothing: a digit without the percent sign and a G behind it are no escape", got)
+	}
 }
 
 func TestTerms_LongerLiteralWins(t *testing.T) {

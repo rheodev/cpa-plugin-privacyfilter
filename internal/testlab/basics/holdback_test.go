@@ -59,6 +59,23 @@ func tableWithValues(t *testing.T) (*mapping.Table, []string) {
 	return tab, ps
 }
 
+// An encoded space between two directory pseudonyms, the way a Markdown
+// link to a directory with a space in its name goes out, comes back whole
+// wherever the stream cuts it, inside the "%20" included: the edge the
+// tail remembers reaches back over the escape.
+func TestHoldback_EncodedSpaceBetweenPseudonyms(t *testing.T) {
+	tab := newTable(t)
+	a := tab.Lookup(detect.KindPathSegment, "Kunden")
+	b := tab.Lookup(detect.KindPathSegment, "Akten")
+	text := "[x](../" + a + "%20" + b + "/notes.md)"
+	want := "[x](../Kunden%20Akten/notes.md)"
+	for cut := 1; cut < len(text); cut++ {
+		if got := streamRestore(t, []string{text[:cut], text[cut:]}, tab.Restorer()); got != want {
+			t.Errorf("cut at %d: %q, want %q", cut, got, want)
+		}
+	}
+}
+
 // Splitting anywhere must not change the result. This is the property the
 // hold-back exists for. The cuts fall on rune boundaries, because every
 // delta of an upstream is a JSON string of its own and never carries half a

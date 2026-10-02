@@ -1,22 +1,27 @@
 package pseudo
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/rheodev/cpa-plugin-privacyfilter/detect"
+)
 
 // ShapedTokens returns every token of text that has the shape of a short
 // hex pseudonym: one of the prefixes h-, d-, f-, u- and PF_ followed by
 // twelve lower-case hex digits, standing on token boundaries, so that a
-// letter or digit on either side makes it part of a longer word. The
-// return path runs it over restored text: whatever still has this shape
-// after the restore is a token the model wrote in the plugin's shape
-// without a table row behind it, an invented name, a pseudonym recalled
-// with slipped digits, or one of another conversation quoted from a file.
-// The address shapes are left out, because real Tailscale and Docker values
-// share them and would only add noise. The result keeps duplicates; the
-// caller counts.
+// letter or digit on either side makes it part of a longer word, unless
+// the digit in front ends a percent-escape, "%20d-…", which delimits as it
+// does for the restorer. The return path runs it over restored text:
+// whatever still has this shape after the restore is a token the model
+// wrote in the plugin's shape without a table row behind it, an invented
+// name, a pseudonym recalled with slipped digits, or one of another
+// conversation quoted from a file. The address shapes are left out,
+// because real Tailscale and Docker values share them and would only add
+// noise. The result keeps duplicates; the caller counts.
 func ShapedTokens(text string) []string {
 	var out []string
 	for i := 0; i < len(text); i++ {
-		if i > 0 && continuesWord(text[i-1]) {
+		if i > 0 && continuesWord(text[i-1]) && !detect.PercentEscapeEnds(text[:i]) {
 			continue
 		}
 		var n, width int

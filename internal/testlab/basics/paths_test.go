@@ -77,6 +77,7 @@ func TestPath_ShapesRoundTrip(t *testing.T) {
 		flat,
 		strings.Join([]string{"projects", flat}, "/"),
 		strings.Join([]string{flat, "abc.jsonl"}, "/"),
+		"[README](../Kunden%20Akten/README-dockerSandbox.md)",
 		"Input/Output.md",
 		"'/home/admin/kunde/x'",
 	}
@@ -89,6 +90,38 @@ func TestPath_ShapesRoundTrip(t *testing.T) {
 			continue
 		}
 		t.Logf("%-46q -> %s", p, mid)
+	}
+}
+
+// A Markdown link writes a directory with a space in its name as
+// "Kunden%20Akten". The forward pass divides the segment at the encoded
+// space and leaves the "%20" standing between two pseudonyms, so the model
+// sees that there is a space to decode. Both ways the model can write the
+// path back restore: the link quoted as it was, and the path with the space
+// decoded, which is the one it puts into a tool call. A segment replaced
+// whole hid the encoding, and the model wrote "%20" into a file system
+// path, where no such directory exists; seen live on the link of a README.
+// The same directory listed with a real space gets the same pseudonyms, so
+// the model can tell that the link and the listing name one directory.
+func TestPath_EncodedSpaceInALink(t *testing.T) {
+	d := newPaths(t, detect.PathsConfig{ReplaceUnknown: true})
+	tab := newTable(t)
+	link := "[README](../Kunden%20Akten/README-dockerSandbox.md)"
+	mid := forward(link, d, tab)
+	kunden, akten := tab.Lookup(detect.KindPathSegment, "Kunden"), tab.Lookup(detect.KindPathSegment, "Akten")
+	if want := "[README](../" + kunden + "%20" + akten + "/README-dockerSandbox.md)"; mid != want {
+		t.Fatalf("forward(%q) = %q, want %q", link, mid, want)
+	}
+	if got := back(mid, tab); got != link {
+		t.Errorf("the link quoted as it was:\n  in %q\n out %q", link, got)
+	}
+	decoded := strings.ReplaceAll(mid, "%20", " ")
+	if got, want := back(decoded, tab), strings.ReplaceAll(link, "%20", " "); got != want {
+		t.Errorf("the path with the space decoded:\n  in %q\n out %q\nwant %q", decoded, got, want)
+	}
+	listed := "/home/" + strings.Join([]string{"alice", "Kunden Akten", "README-dockerSandbox.md"}, "/")
+	if got := forward(listed, d, tab); !strings.Contains(got, kunden+" "+akten) {
+		t.Errorf("the listing with a real space: %q, want the same two pseudonyms around the space", got)
 	}
 }
 

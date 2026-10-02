@@ -22,6 +22,8 @@ func TestShapedTokens(t *testing.T) {
 		user + "@" + seg + ".invalid":            user + " " + seg,
 		"(" + opaque + ")":                       opaque,
 		"backup-" + seg + ".tar":                 seg,
+		"x%20" + seg + "%2F" + host:              seg + " " + host, // a percent-escape in front delimits
+		"20" + seg + " %2G" + seg:                "",               // a digit without the percent sign does not, nor does "%2G"
 		seg:                                      seg,
 		"x" + seg + " " + seg + "x " + seg + "1": "",
 		"ä" + seg + " " + seg + "ü":              "",

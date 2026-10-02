@@ -254,6 +254,49 @@ func TestPaths_BareShapes(t *testing.T) {
 	}
 }
 
+// An encoded space divides a segment into words: a Markdown link writes a
+// directory with a space in its name as "Kunden%20Akten", and each word is
+// reported on its own with the "%20" left standing between them, so the
+// model sees the encoded space and can decode it. The words of a file name
+// belong to the file name: left alone by default, replaced one by one with
+// AllFilenames, the extension on the last. Empty words, at the edges of a
+// segment or between two escapes, are not reported.
+func TestPaths_EncodedSpaceDividesASegment(t *testing.T) {
+	d := newPaths(t, detect.PathsConfig{ReplaceUnknown: true})
+	link := "[README](../Kunden%20Akten/README-dockerSandbox.md)"
+	got := d.Scan(link)
+	assertDisjointSorted(t, link, got)
+	if want := "path_segment:Kunden path_segment:Akten"; values(got) != want {
+		t.Fatalf("Scan(%q) = %q, want %q", link, values(got), want)
+	}
+	if between := link[got[0].End:got[1].Start]; between != "%20" {
+		t.Fatalf("between the two words stands %q, want the encoded space", between)
+	}
+	cases := map[string]string{
+		j("home", "alice", "Kunden%20Akten", "notes.md"): "path_segment:alice path_segment:Kunden path_segment:Akten",
+		j("home", "alice", "Kunden%20Akten%20Meier", ""): "path_segment:alice path_segment:Kunden path_segment:Akten path_segment:Meier",
+		j("home", "alice", "%20Kunden%20", "x.txt"):      "path_segment:alice path_segment:Kunden",
+		j("home", "alice", "src%20tree"):                 "path_segment:alice path_segment:tree", // src is preserved, tree is not
+		j("home", "alice", "Kunden%20Bericht.md"):        "path_segment:alice",                   // a file name, both words of it
+		"Kunden%20Akten": "", // no slash, no path
+		"%20":            "",
+	}
+	for text, want := range cases {
+		got := d.Scan(text)
+		assertDisjointSorted(t, text, got)
+		if values(got) != want {
+			t.Errorf("Scan(%q) = %q, want %q", text, values(got), want)
+		}
+	}
+	all := newPaths(t, detect.PathsConfig{ReplaceUnknown: true, AllFilenames: true})
+	text := j("home", "alice", "Kunden%20Bericht.md")
+	got = all.Scan(text)
+	assertDisjointSorted(t, text, got)
+	if want := "path_segment:alice filename:Kunden filename:Bericht.md"; values(got) != want {
+		t.Fatalf("AllFilenames: Scan(%q) = %q, want %q", text, values(got), want)
+	}
+}
+
 // The slash of a tag is not a path: "</p>" is markup, and so are
 // "</div></section>" and the self-closing "<br/>" and "<input disabled/>",
 // whose slash would otherwise pass as the trailing slash of a directory.

@@ -384,7 +384,9 @@ type Restorer interface {
 	// "Ruth" would rewrite the middle of "Ruthless" in the model's answer,
 	// and an address pseudonym would rewrite the front of a longer address.
 	// The rule is the one of the structural detectors: letters and digits
-	// continue a token, everything else delimits, the underscore included.
+	// continue a token, everything else delimits, the underscore included,
+	// and so does a percent-escape in front, the "%20" of an encoded path,
+	// although it ends in a hex digit.
 	// That is looser than the term list's rule, and deliberately so: a
 	// pseudonym the forward pass inserted next to an underscore, as in
 	// "scan_<address>.log", must come back, and restoring one the model
@@ -402,9 +404,9 @@ type Restorer interface {
 	// pending, never splits a UTF-8 sequence and is at most
 	// MaxPseudonymLen(), unless pseudonyms follow each other without a
 	// gap, in which case the whole run waits. The stream does not call
-	// Holdback and Restore by hand; it keeps a Tail, which also carries the
-	// one bit the two calls cannot: whether the byte in front of the text
-	// continued a word.
+	// Holdback and Restore by hand; it keeps a Tail, which also carries what
+	// the two calls cannot see: the last bytes in front of the text, as far
+	// back as the boundary rule looks.
 	Holdback(text string) int
 	// Hits returns how often Restore swapped each pseudonym back so far,
 	// keyed by pseudonym. The map is a copy; the counting is safe for the
@@ -572,14 +574,16 @@ func (tr *trie) insertSpelling(e Entry, spelling string, alias bool) {
 // original is never rescanned. A hit that is not delimited on both sides is
 // skipped; see the Restorer interface for why.
 func (r *restorer) Restore(text string, escaped bool) (string, bool) {
-	return r.restore(text, escaped, false, false)
+	return r.restore(text, escaped, "", false)
 }
 
-// restore is Restore over a text whose edges are known: glued says the rune
-// in front of text continued a word, next says the rune behind it does. The
-// stream knows both from the text it has already delivered and the text it
-// still holds; a whole body has neither.
-func (r *restorer) restore(text string, escaped, glued, next bool) (string, bool) {
+// restore is Restore over a text whose edges are known: edge holds the last
+// bytes in front of text, next says the rune behind it continues a word.
+// The stream knows both from the text it has already delivered and the text
+// it still holds; a whole body has neither. The front edge is bytes rather
+// than one bit so that a percent-escape cut by a fragment boundary is seen
+// whole, see leftGlued.
+func (r *restorer) restore(text string, escaped bool, edge string, next bool) (string, bool) {
 	tr := r.current()
 	if tr == nil || text == "" {
 		return text, false
@@ -590,7 +594,7 @@ func (r *restorer) restore(text string, escaped, glued, next bool) (string, bool
 	last := 0
 
 	for i := 0; i < len(text); {
-		if !tr.starts[text[i]] || leftGlued(text, i, glued) {
+		if !tr.starts[text[i]] || leftGlued(text, i, edge) {
 			i++
 			continue
 		}
@@ -636,18 +640,31 @@ func isTokenRune(r rune) bool {
 // the word in front of it. Only a pseudonym that begins with a token rune
 // can: one that begins with punctuation may sit directly against a letter
 // without growing a word, which keeps matches inside JSON and inside paths
-// working. At the front of text the caller says whether a word ended there.
-func leftGlued(text string, i int, glued bool) bool {
+// working. A percent-escape in front, the "%20" of an encoded path, ends
+// no word although it ends in a hex digit: "d-…%20d-…" is two directory
+// pseudonyms around an encoded space, and both have to come back. edge
+// holds the bytes in front of text when the caller knows them, so that the
+// decision at the front of text, and within its first bytes, where an
+// escape may reach back over a fragment boundary, is the one the whole
+// text would get.
+func leftGlued(text string, i int, edge string) bool {
 	first, _ := utf8.DecodeRuneInString(text[i:])
 	if !isTokenRune(first) {
 		return false
 	}
-	if i == 0 {
-		return glued
+	before := text[:i]
+	if i < escapeLen {
+		before = edge + before
 	}
-	prev, _ := utf8.DecodeLastRuneInString(text[:i])
+	if before == "" || detect.PercentEscapeEnds(before) {
+		return false
+	}
+	prev, _ := utf8.DecodeLastRuneInString(before)
 	return isTokenRune(prev)
 }
+
+// escapeLen is the length of a percent-escape, "%" and two hex digits.
+const escapeLen = 3
 
 // chainStatus says how a run of pseudonyms ends.
 type chainStatus int
@@ -741,17 +758,17 @@ func (tr *trie) chain(text string, i int, whole bool) (hits []*trieNode, ends []
 // restored although the next fragment began with a letter, so the stream
 // restored where the same text in one piece did not.
 func (r *restorer) Holdback(text string) int {
-	return r.holdback(text, false)
+	return r.holdback(text, "")
 }
 
 // holdback is Holdback over a text whose front edge is known; see restore.
-func (r *restorer) holdback(text string, glued bool) int {
+func (r *restorer) holdback(text string, edge string) int {
 	tr := r.current()
 	if tr == nil {
 		return 0
 	}
 	for i := 0; i < len(text); {
-		if !tr.starts[text[i]] || leftGlued(text, i, glued) {
+		if !tr.starts[text[i]] || leftGlued(text, i, edge) {
 			// A pseudonym that would continue the word in front of it is
 			// never restored, so it is not worth waiting for either.
 			i++
@@ -788,15 +805,30 @@ func jsonEscape(s string) string {
 }
 
 // Tail is the text of one streamed block that has not been delivered yet,
-// with the one thing the held bytes alone cannot tell: whether the rune in
-// front of them continued a word. Every fragment of the block goes through
-// Push, which returns what can be delivered now, restored, and keeps the
-// rest; Flush hands out the rest when the block ends. A Tail is a value and
-// may be copied to be put back.
+// with the one thing the held bytes alone cannot tell: what stood in front
+// of them, as far back as a boundary rule looks, the last rune delivered or
+// a percent-escape. Every fragment of the block goes through Push, which
+// returns what can be delivered now, restored, and keeps the rest; Flush
+// hands out the rest when the block ends. A Tail is a value and may be
+// copied to be put back.
 type Tail struct {
-	r     *restorer
-	held  string
-	glued bool
+	r    *restorer
+	held string
+	// edge is the end of the text delivered so far, at most edgeLen bytes.
+	edge string
+}
+
+// edgeLen is the length of the front edge a Tail remembers: the longest
+// UTF-8 sequence, so the last rune is always whole, and more than a
+// percent-escape.
+const edgeLen = utf8.UTFMax
+
+// lastBytes returns the last n bytes of s, or all of s when it is shorter.
+func lastBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[len(s)-n:]
 }
 
 // NewTail returns an empty tail over r. A restorer that is not one of this
@@ -818,7 +850,7 @@ func (t *Tail) Push(fragment string, escaped bool) (out string, changed bool) {
 		return fragment, false
 	}
 	combined := t.held + fragment
-	n := t.r.holdback(combined, t.glued)
+	n := t.r.holdback(combined, t.edge)
 	emit, held := combined[:len(combined)-n], combined[len(combined)-n:]
 	t.held = held
 	if emit == "" {
@@ -829,9 +861,8 @@ func (t *Tail) Push(fragment string, escaped bool) (out string, changed bool) {
 		first, _ := utf8.DecodeRuneInString(held)
 		next = isTokenRune(first)
 	}
-	out, changed = t.r.restore(emit, escaped, t.glued, next)
-	last, _ := utf8.DecodeLastRuneInString(emit)
-	t.glued = isTokenRune(last)
+	out, changed = t.r.restore(emit, escaped, t.edge, next)
+	t.edge = lastBytes(t.edge+emit, edgeLen)
 	return out, changed
 }
 
@@ -846,8 +877,7 @@ func (t *Tail) Flush(escaped bool) (out string, changed bool) {
 	if t.r == nil {
 		return held, false
 	}
-	out, changed = t.r.restore(held, escaped, t.glued, false)
-	last, _ := utf8.DecodeLastRuneInString(held)
-	t.glued = isTokenRune(last)
+	out, changed = t.r.restore(held, escaped, t.edge, false)
+	t.edge = lastBytes(t.edge+held, edgeLen)
 	return out, changed
 }

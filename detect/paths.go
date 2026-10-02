@@ -147,7 +147,8 @@ func (d *pathsDetector) Name() string { return "paths" }
 // bareShape decides: a file extension at the end, a slash at the end, a
 // hidden directory in front, or a working directory flattened into one
 // name. It runs over segments of letters, digits and the characters ._-~@+%
-// and ends at the first other character.
+// and ends at the first other character; an encoded space, "%20", inside a
+// segment divides it into words, see segments.
 func (d *pathsDetector) Scan(text string) []Match {
 	if text == "" || (!strings.Contains(text, "/") && !strings.Contains(text, "-")) {
 		return nil
@@ -346,7 +347,15 @@ func isSegmentRune(r rune) bool {
 	return unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
-// segments appends one match per reportable segment of text[start:end].
+// segments appends one match per reportable segment of text[start:end]. A
+// segment is divided at an encoded space, "%20", the way a Markdown link
+// writes a directory with a space in its name, and the words on either side
+// are reported on their own with the encoded space left standing between
+// them. The model then sees "d-…%20d-…", knows there is a space to decode,
+// and both words come back whether it decodes or not. A segment replaced
+// whole would hide the encoding behind one pseudonym: the model, seeing no
+// "%20", would put the pseudonym into a file system path, the restore would
+// bring the "%20" back, and the path would miss the directory.
 func (d *pathsDetector) segments(text string, start, end int, out []Match) []Match {
 	path := text[start:end]
 	pos := 0
@@ -365,14 +374,22 @@ func (d *pathsDetector) segments(text string, start, end int, out []Match) []Mat
 				segEnd--
 			}
 		}
-		if kind, ok := d.classify(seg, last); ok {
-			out = append(out, Match{
-				Start:  start + pos,
-				End:    start + segEnd,
-				Value:  seg,
-				Kind:   kind,
-				Source: "paths",
-			})
+		// Whether the segment is a file name is decided on the whole of
+		// it: the extension sits on its last word, and the words in front
+		// are parts of the same file name, not directories.
+		file := last && hasFileExt(seg)
+		wordStart := pos
+		for word := range strings.SplitSeq(seg, encodedSpace) {
+			if kind, ok := d.classify(word, file); ok {
+				out = append(out, Match{
+					Start:  start + wordStart,
+					End:    start + wordStart + len(word),
+					Value:  word,
+					Kind:   kind,
+					Source: "paths",
+				})
+			}
+			wordStart += len(word) + len(encodedSpace)
 		}
 		if next < 0 {
 			break
@@ -382,8 +399,10 @@ func (d *pathsDetector) segments(text string, start, end int, out []Match) []Mat
 	return out
 }
 
-// classify decides whether a segment is reported and as what.
-func (d *pathsDetector) classify(seg string, last bool) (Kind, bool) {
+// classify decides whether a segment, or one word of a segment with an
+// encoded space in it, is reported and as what. file says the segment is
+// the file name of the path.
+func (d *pathsDetector) classify(seg string, file bool) (Kind, bool) {
 	switch seg {
 	case "", ".", "..", "~":
 		return "", false
@@ -398,7 +417,7 @@ func (d *pathsDetector) classify(seg string, last bool) (Kind, bool) {
 		// A flattened working directory is a directory whatever it ends in.
 		return KindPathSegment, true
 	}
-	if last && hasFileExt(seg) {
+	if file {
 		if !d.cfg.AllFilenames {
 			return "", false
 		}
