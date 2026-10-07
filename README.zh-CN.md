@@ -4,7 +4,7 @@
 
 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 的隐私过滤插件。它位于编程助手与模型提供商之间，在请求离开你的机器之前把主机名、IP 地址、邮箱、人名和客户名、路径、序列号、账号之类的标识替换为透明的替身，再把真实值放回回答里。模型把替身当作真实的东西来用，管理系统、改配置、写工具调用，却始终不知道实际的名称和 ID。
 
-插件有两种模式。`redact` 是默认值，也就是原版插件：检测到的密钥、联系方式和证件号码变成 `[REDACTED]`，单向。`pseudonymize` 是本分支存在的理由：你列表里的值，加上检测器找到的一切，都变成同形状的稳定假名，回答被翻译回来，流式与否都一样。两种模式在检测上并不互斥。假名模式把原版插件的自动检测作为最后一层运行，排在你的列表和结构模式之后，因此 `redact` 能找到的东西这里也都能找到。区别在于命中之后怎么办：扔掉，还是换成模型能用、客户端拿回原值的东西。本文档面向 `pseudonymize`；`redact` 见[脱敏模式](#脱敏模式)。
+插件有两种模式。`redact` 是默认值，也就是原版插件：检测到的密钥、联系方式和证件号码变成 `[EMAIL]`、`[SECRET]` 之类的标签，单向。`pseudonymize` 是本分支存在的理由：你列表里的值，加上检测器找到的一切，都变成同形状的稳定假名，回答被翻译回来，流式与否都一样。两种模式在检测上并不互斥。假名模式把原版插件的自动检测作为最后一层运行，排在你的列表和结构模式之后，因此 `redact` 能找到的东西这里也都能找到。区别在于命中之后怎么办：扔掉，还是换成模型能用、客户端拿回原值的东西。本文档面向 `pseudonymize`；`redact` 见[脱敏模式](#脱敏模式)。
 
 ## 一眼看懂
 
@@ -287,6 +287,13 @@ plugins:
 | `skip_models`   | array  | `[]`   | 绕过插件的模型                                                                              |
 | `skip_formats`  | array  | `[]`   | 绕过插件的来源格式                                                                            |
 
+只在 `redact` 模式下读取的字段，见[脱敏模式](#脱敏模式)：
+
+| 字段                   | 类型     | 默认值  | 说明                                                                                        |
+|----------------------|--------|------|-------------------------------------------------------------------------------------------|
+| `replacement`        | string | 未设置  | 用同一个标签替换所有命中，代替内置标签，例如 `[REDACTED]`。                                                      |
+| `replacement_labels` | object | `{}` | 按实体类型（`email`、`secret`、`phone`、`id`、`bank_card`、`ip`）分别设置标签；按类型的标签优先于 `replacement`。 |
+
 只在 `pseudonymize` 模式下读取的字段。`mode: redact` 会忽略它们，插件行为与原版逐字节一致：
 
 | 字段                      | 类型     | 默认值          | 说明                                                                                                                                               |
@@ -303,6 +310,8 @@ plugins:
 | `limits.mapping_ttl`    | string | `30m`        | 会话的映射表在最后一次使用后保留多久。每个请求、响应和流式分块都算使用，所以进行中的会话不会丢表；静默的会话在此时间后被丢弃。                                                                                                                |
 | `on_error`              | string | `block`      | 检测或解析失败时的正向行为：`block` 终止请求，`passthrough` 原样转发。还原路径出错时总是原样放行。                                                                                     |
 | `audit`                 | object | 关闭           | 本地审计日志：`path`（为空即关闭；相对路径相对插件目录解析）和 `max_bytes`（默认 10 MiB，文件轮转一次到 `.1`）。每条映射和每次还原都以明文写入，见[审计日志](#审计日志)。 |
+
+插件无法解析的配置会在启动时导致注册失败：CLIProxyAPI 在日志中给出原因并在没有插件的情况下继续运行，所以每次启动后都要通过 `GET /v0/management/plugins` 确认 `effective_enabled: true`。热更新时被拒绝的配置会连同出错字段一起记入日志，之前有效的配置继续生效，一处笔误不会静默关掉过滤。`pseudonymize` 模式的设置错误则不同，比如缺少密钥或词条被拒绝：插件照常注册，并以这条消息拦截每一个请求，直到修正配置并重启代理。
 
 ### 关闭检测器
 
@@ -421,16 +430,33 @@ BUILD_TAGS=betterleaks make build
 
 ### 脱敏模式
 
-默认的 `mode: redact` 就是原版插件：单向，没有任何东西回来。它在 before-auth 和 after-auth 请求拦截阶段运行，然后解析 JSON 请求体：
+默认的 `mode: redact` 就是原版插件：单向，没有任何东西回来。它在 before-auth 和 after-auth 两个请求拦截阶段都会脱敏，两个阶段看到的都是客户端格式的请求体（executor 翻译之前）。after-auth 这一遍用来拦住请求链后面其他插件加进来的文本，例如优先级更低的 before-auth 拦截器或优先级更高的 after-auth 拦截器。脱敏是幂等的，已经脱敏过的文本不会产生新的命中：
 
 1. 检查 `skip_models` 和 `skip_formats`。
 2. 将请求体解析为 JSON。
-3. 优先处理 `messages`，没有时处理 `input`。
-4. 只修改文本字段。
+3. 处理所有支持的提示词字段（见下表）。
+4. 只修改自由文本。
 5. 检测到敏感内容后，用占位符替换原文。
 6. 解析失败或未命中可处理字段时，请求保持不变。
 
-支持的请求体包括 OpenAI 风格的 `messages` 和 `input`：
+各客户端格式的脱敏字段：
+
+| 格式                 | 字段                                                                                  |
+|--------------------|-------------------------------------------------------------------------------------|
+| OpenAI Chat        | `messages[].content`（字符串或 `text` 分段）                                               |
+| OpenAI 图片 / 视频      | 图片和视频生成请求的 `prompt`（字符串或字符串数组）                                                    |
+| OpenAI Responses   | `instructions`、`input`（字符串）、`input[].content`、`function_call_output` 的 `output`     |
+| Claude             | `system`、`messages[].content` 文本块、`tool_result` 内容                                   |
+| Gemini             | `systemInstruction` / `system_instruction` 和 `contents[].parts[].text`               |
+| Gemini CLI         | 顶层 `request` 对象内的上述 Gemini 字段                                                       |
+
+以下内容有意不修改：工具调用参数（`function_call.arguments`、Claude `tool_use.input`、Gemini `functionCall` / `functionResponse`）、图片、文件、Claude `thinking` 块，以及标记了 `thought: true` 的 Gemini 分段（其文本与 `thoughtSignature` 绑定）。OpenAI Completions 请求通过 `messages` 覆盖：宿主在调用拦截器之前会先把它转成 chat completions 格式。`skip_formats` 的常见取值是宿主的来源格式名，例如 `openai`、`openai-response`、`claude`、`gemini`、`gemini-cli`、`openai-image`、`openai-video`。
+
+占位符默认是库的内置标签 `[EMAIL]`、`[PHONE]`、`[ID]`、`[BANK_CARD]`、`[IP]` 和 `[SECRET]`；`replacement` 为所有命中设置同一个标签，`replacement_labels` 按实体类型分别设置，按类型的标签优先于全局标签。假名模式不受影响：它读取库的检测结果，而不是库的渲染。
+
+每次拦截只要有脱敏就向宿主日志输出一行，列出被脱敏字段的 JSON 路径，例如 `privacy filter redacted 2 field(s): messages[0].content, system`，不会记录请求原文。这些日志通过宿主的 `host.log` 回调输出，遵循 CLIProxyAPI 的日志级别、格式和输出位置，并带上请求 ID。
+
+支持的请求体示例：
 
 ```json
 {
@@ -448,7 +474,7 @@ BUILD_TAGS=betterleaks make build
 }
 ```
 
-两种模式的检测都使用 [packyme/privacy-filter](https://github.com/packyme/privacy-filter) 和 Gitleaks 规则，覆盖密钥、连接串、证书等内容。规则在构建时从 `rules/gitleaks.toml` 内嵌；运行时插件依次取配置中的 `gitleaks_toml`（若设置）、共享库旁的 `rules/gitleaks.toml`、内嵌的规则。用 `make update-rules` 更新内嵌规则并重新构建。
+两种模式的检测都使用 [rheodev/privacy-filter](https://github.com/rheodev/privacy-filter)（[packyme/privacy-filter](https://github.com/packyme/privacy-filter) 的分支，修复了大请求上的 panic）和 Gitleaks 规则，覆盖密钥、连接串、证书等内容。规则在构建时从 `rules/gitleaks.toml` 内嵌；运行时插件依次取配置中的 `gitleaks_toml`（若设置）、共享库旁的 `rules/gitleaks.toml`、内嵌的规则。用 `make update-rules` 更新内嵌规则并重新构建。
 
 ### betterleaks
 
@@ -493,11 +519,11 @@ rules/gitleaks.toml     内置检测规则
 依赖说明：
 
 ```text
-privacyfilter => github.com/packyme/privacy-filter
+privacyfilter => github.com/rheodev/privacy-filter
 ```
 
 ## 来源
 
-- 核心过滤逻辑：[packyme/privacy-filter](https://github.com/packyme/privacy-filter)
+- 核心过滤逻辑：[rheodev/privacy-filter](https://github.com/rheodev/privacy-filter)，派生自 [packyme/privacy-filter](https://github.com/packyme/privacy-filter)
 - 插件运行时：[router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
 - 学 AI 就上 L 站：[linux.do](https://linux.do/)

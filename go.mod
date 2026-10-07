@@ -8,7 +8,7 @@ require (
 	github.com/sirupsen/logrus v1.9.4
 	golang.org/x/sys v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
-	privacyfilter v0.0.0-20260609060647-64b8de3c2060
+	privacyfilter v0.0.0-20261007091522-26ffa7774c88
 )
 
 require (
@@ -62,4 +62,4 @@ require (
 	golang.org/x/text v0.40.0 // indirect
 )
 
-replace privacyfilter => github.com/packyme/privacy-filter v0.0.0-20260609060647-64b8de3c2060
+replace privacyfilter => github.com/rheodev/privacy-filter v0.0.0-20261007091522-26ffa7774c88

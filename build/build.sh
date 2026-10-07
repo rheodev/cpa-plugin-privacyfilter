@@ -15,7 +15,7 @@
 #         dist/machine-ids.py, the term-list helper that ships next to it
 set -euo pipefail
 
-VERSION="${1:-${VERSION:-0.3.0-dev}}"
+VERSION="${1:-${VERSION:-0.4.0-dev}}"
 IMAGE="${IMAGE:-docker.io/library/golang:1.26-bookworm}"
 PLUGIN_NAME="${PLUGIN_NAME:-privacyfilter}"
 BUILD_TAGS="${BUILD_TAGS:-}"           # e.g. "betterleaks"

@@ -371,17 +371,21 @@ func TestPatterns_IBANChecksum(t *testing.T) {
 
 func TestKindFromPackyme(t *testing.T) {
 	cases := map[string]detect.Kind{
-		detect.PackymeLabelEmail:    detect.KindEmail,
-		detect.PackymeLabelIP:       detect.KindIPv4,
-		detect.PackymeLabelPhone:    detect.KindSecret,
-		detect.PackymeLabelIdentity: detect.KindSecret,
-		detect.PackymeLabelBankCard: detect.KindSecret,
-		"github-pat":                detect.KindSecret,
-		"":                          detect.KindSecret,
+		detect.PackymeTypeEmail:    detect.KindEmail,
+		detect.PackymeTypeIP:       detect.KindIPv4,
+		detect.PackymeTypePhone:    detect.KindSecret,
+		detect.PackymeTypeIdentity: detect.KindSecret,
+		detect.PackymeTypeBankCard: detect.KindSecret,
+		detect.PackymeTypeSecret:   detect.KindSecret,
+		// The labels of the library before the fork, and a type a later
+		// library might add: opaque, never a shaped pseudonym.
+		"[邮箱]":       detect.KindSecret,
+		"github-pat": detect.KindSecret,
+		"":           detect.KindSecret,
 	}
-	for label, want := range cases {
-		if got := detect.KindFromPackyme(label); got != want {
-			t.Errorf("KindFromPackyme(%q) = %q, want %q", label, got, want)
+	for entityType, want := range cases {
+		if got := detect.KindFromPackyme(entityType); got != want {
+			t.Errorf("KindFromPackyme(%q) = %q, want %q", entityType, got, want)
 		}
 	}
 }

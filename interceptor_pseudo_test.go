@@ -731,7 +731,7 @@ func TestRedactMode_Unchanged(t *testing.T) {
 		if resp.Terminate {
 			t.Fatalf("%s: redact mode must never terminate a request", hook.name)
 		}
-		if !strings.Contains(string(resp.Body), "[邮箱]") {
+		if !strings.Contains(string(resp.Body), "[EMAIL]") {
 			t.Fatalf("%s: expected the redaction placeholder, got: %s", hook.name, resp.Body)
 		}
 		if strings.Contains(string(resp.Body), "test@example.com") {

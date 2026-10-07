@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,7 +10,6 @@ import (
 
 	"privacyfilter/filter"
 
-	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
 
@@ -172,6 +172,15 @@ type privacyFilterConfig struct {
 	GitleaksTOML string   `yaml:"gitleaks_toml"`
 	SkipModels   []string `yaml:"skip_models"`
 	SkipFormats  []string `yaml:"skip_formats"`
+	// Replacement and ReplacementLabels are the labels of redact mode, as
+	// in the original plugin: one label for every finding, or one per
+	// entity type of the library, which take precedence. Their types refuse
+	// what YAML would otherwise coerce into a string, a number or a boolean,
+	// and an empty label; an absent or null key leaves the built-in labels.
+	// Pseudonymize mode reads the library's findings, not its rendering, so
+	// the labels have no effect there.
+	Replacement       replacementLabel  `yaml:"replacement"`
+	ReplacementLabels replacementLabels `yaml:"replacement_labels"`
 
 	// RawMode backs the Mode accessor below. The field cannot be named Mode
 	// itself: Go does not allow a method and a field of the same name on the
@@ -210,6 +219,52 @@ type privacyFilterConfig struct {
 	// OnError is the configured forward-path error behaviour. Unlike Mode it
 	// needs no accessor method, so the field keeps the schema's name.
 	OnError OnError `yaml:"on_error"`
+}
+
+// replacementLabel prevents YAML's string decoder from coercing booleans and
+// numbers into labels. A null field is left unset by the YAML decoder.
+type replacementLabel string
+
+func (label *replacementLabel) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.ScalarNode || node.Tag != "!!str" {
+		return fmt.Errorf("replacement label must be a string")
+	}
+	if strings.TrimSpace(node.Value) == "" {
+		return fmt.Errorf("replacement label must not be empty or whitespace-only")
+	}
+	*label = replacementLabel(node.Value)
+	return nil
+}
+
+type replacementLabels map[string]string
+
+func (labels *replacementLabels) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("replacement_labels must be a mapping")
+	}
+	if len(node.Content) == 0 {
+		return nil
+	}
+	values := make(map[string]string, len(node.Content)/2)
+	for i := 0; i < len(node.Content); i += 2 {
+		key, value := node.Content[i], node.Content[i+1]
+		if key.Kind != yaml.ScalarNode || key.Tag != "!!str" {
+			return fmt.Errorf("replacement_labels keys must be strings")
+		}
+		if key.Value == "" || strings.TrimSpace(key.Value) != key.Value {
+			return fmt.Errorf("replacement_labels key %q must be nonempty without edge whitespace", key.Value)
+		}
+		if _, exists := values[key.Value]; exists {
+			return fmt.Errorf("duplicate replacement_labels key %q", key.Value)
+		}
+		var label replacementLabel
+		if err := label.UnmarshalYAML(value); err != nil {
+			return fmt.Errorf("replacement_labels[%q]: %w", key.Value, err)
+		}
+		values[key.Value] = string(label)
+	}
+	*labels = values
+	return nil
 }
 
 // defaultConfig returns the configuration that applies when a key is absent
@@ -382,11 +437,26 @@ func newFilter(pluginDir string, cfg privacyFilterConfig) (*filter.Filter, error
 		tomlPath = tmpPath
 	}
 
-	f, err := filter.New(tomlPath)
+	f, err := filter.New(tomlPath, filter.Config{
+		Replacement:       string(cfg.Replacement),
+		ReplacementLabels: map[string]string(cfg.ReplacementLabels),
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create privacy filter: %w", err)
+		var source string
+		switch {
+		case embedded:
+			source = "embedded rules"
+		case cfg.GitleaksTOML != "":
+			source = fmt.Sprintf("gitleaks_toml %q", tomlPath)
+		default:
+			source = fmt.Sprintf("sidecar rules file %q", tomlPath)
+		}
+		return nil, fmt.Errorf("failed to create privacy filter from %s: %w", source, err)
 	}
 	rules, skipped := f.Stats()
-	log.Infof("privacy filter loaded: %d rules, %d skipped", rules, skipped)
+	pluginLog(context.Background(), logLevelInfo, fmt.Sprintf("privacy filter loaded: %d rules, %d skipped", rules, skipped), map[string]any{
+		"rules":         rules,
+		"skipped_rules": skipped,
+	})
 	return f, nil
 }

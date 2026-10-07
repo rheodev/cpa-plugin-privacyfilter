@@ -174,6 +174,24 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang lld wget
 
+      # go-cross/cgo-actions hardcodes FreeBSD 14.3-RELEASE, which is no longer
+      # on download.freebsd.org. Point its wget calls at the release archive.
+      - name: Redirect FreeBSD base download to archive
+        run: |
+          set -euo pipefail
+          shim_dir="${RUNNER_TEMP}/wget-shim"
+          mkdir -p "${shim_dir}"
+          cat > "${shim_dir}/wget" <<'EOF'
+          #!/usr/bin/env bash
+          from='https://download.freebsd.org/releases/'
+          to='https://archive.freebsd.org/old-releases/'
+          args=()
+          for a in "$@"; do args+=("${a/$from/$to}"); done
+          exec /usr/bin/wget "${args[@]}"
+          EOF
+          chmod +x "${shim_dir}/wget"
+          echo "${shim_dir}" >> "${GITHUB_PATH}"
+
       - name: Resolve release metadata
         id: release_metadata
         run: scripts/release-metadata.sh freebsd ${{ matrix.goarch }}

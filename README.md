@@ -4,7 +4,7 @@ English | [简体中文](README.zh-CN.md)
 
 A privacy filter plugin for [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI). It sits between your coding assistant and the model provider and replaces identifiers such as host names, IP addresses, e-mail addresses, the names of people and customers, paths, serial numbers and account numbers with transparent stand-ins before a request leaves your machine, then puts the real values back into the answer. The model works with the stand-ins as if they were the real thing, administers a system, edits a config, writes a tool call, without ever knowing the actual names and IDs.
 
-There are two modes. `redact` is the default and the original plugin: detected secrets, contact data and ID numbers become `[REDACTED]`, one way. `pseudonymize` is the reason for this fork: your own values from a list, plus everything the detectors find, become stable pseudonyms of the same shape, and the answer is translated back, streamed or not. The modes do not compete in detection. Pseudonymize runs the original plugin's automatic detection as its last layer, after your list and the structural patterns, so everything `redact` would find is found here too. The difference is what happens to a hit: thrown away, or replaced by something the model can use and the client gets back as the original. This document is written for `pseudonymize`; `redact` is described under [Redact mode](#redact-mode).
+There are two modes. `redact` is the default and the original plugin: detected secrets, contact data and ID numbers become a label such as `[EMAIL]` or `[SECRET]`, one way. `pseudonymize` is the reason for this fork: your own values from a list, plus everything the detectors find, become stable pseudonyms of the same shape, and the answer is translated back, streamed or not. The modes do not compete in detection. Pseudonymize runs the original plugin's automatic detection as its last layer, after your list and the structural patterns, so everything `redact` would find is found here too. The difference is what happens to a hit: thrown away, or replaced by something the model can use and the client gets back as the original. This document is written for `pseudonymize`; `redact` is described under [Redact mode](#redact-mode).
 
 ## At a glance
 
@@ -287,6 +287,13 @@ Fields read in both modes:
 | `skip_models`   | array  | `[]`    | Models that bypass the plugin.                                                         |
 | `skip_formats`  | array  | `[]`    | Source formats that bypass the plugin.                                                 |
 
+Fields read in `redact` mode only, see [Redact mode](#redact-mode):
+
+| Field                | Type   | Default | Description                                                                                                                          |
+|----------------------|--------|---------|--------------------------------------------------------------------------------------------------------------------------------------|
+| `replacement`        | string | unset   | One label for every finding instead of the built-in ones, for example `[REDACTED]`.                                                  |
+| `replacement_labels` | object | `{}`    | A label per entity type (`email`, `secret`, `phone`, `id`, `bank_card`, `ip`); a per-type label takes precedence over `replacement`. |
+
 Fields read in `pseudonymize` mode only. With `mode: redact` they are ignored and the plugin behaves byte for byte like the original:
 
 | Field                    | Type   | Default        | Description                                                                                                                                                                                                                                                                                                               |
@@ -303,6 +310,8 @@ Fields read in `pseudonymize` mode only. With `mode: redact` they are ignored an
 | `limits.mapping_ttl`     | string | `30m`          | How long a conversation's mapping table is kept after its last use. Every request, response and stream chunk counts as use, so a running conversation never loses its table; a quiet one is dropped after this time.                                                                                                                                                                                                           |
 | `on_error`               | string | `block`        | Forward-path behaviour when detection or parsing fails: `block` terminates the request, `passthrough` forwards it unfiltered. The return path always passes through on error.                                                                                                                                             |
 | `audit`                  | object | off            | Local audit log: `path` (empty keeps it off; a relative path resolves from the plugin directory) and `max_bytes` (default 10 MiB, the file is rotated once to `.1`). Every mapping and every restore is written in clear text, see [Audit log](#audit-log).                                                             |
+
+A configuration the plugin cannot parse fails registration at start: CLIProxyAPI logs the reason and runs without the plugin, so check `GET /v0/management/plugins` for `effective_enabled: true` after every start. On a hot reload a rejected configuration is logged with the field that failed and the previous valid one stays in force, so a typo cannot silently switch filtering off. An error in the set-up of `pseudonymize` mode, a missing secret or a refused term, is different: the plugin registers and blocks every request with the message until the configuration is fixed and the proxy restarted.
 
 ### Switching detectors off
 
@@ -421,16 +430,33 @@ Streamed responses are restored chunk by chunk. Because a pseudonym may be split
 
 ### Redact mode
 
-`mode: redact`, the default, is the original plugin: one-way, nothing comes back. It runs for both before-auth and after-auth request interception hooks, then parses the JSON body:
+`mode: redact`, the default, is the original plugin: one-way, nothing comes back. It redacts in both the before-auth and the after-auth request interception hook. Both see the client-format body, before the executor's translation; the after-auth pass catches text that other plugins add later in the chain, a lower-priority before-auth interceptor or a higher-priority after-auth one. Redaction is idempotent, so text that is already clean produces no new hits.
 
 1. Checks `skip_models` and `skip_formats`.
 2. Parses the request body as JSON.
-3. Handles `messages` first, then falls back to `input`.
-4. Edits text fields only.
+3. Redacts every supported prompt field, see the table below.
+4. Edits free-form text only.
 5. Replaces detected sensitive data with placeholders.
 6. Leaves the request unchanged if parsing fails or no supported field is found.
 
-Supported request shapes include OpenAI-style `messages` and `input` bodies:
+Redacted fields by client format:
+
+| Format               | Fields                                                                               |
+|----------------------|--------------------------------------------------------------------------------------|
+| OpenAI Chat          | `messages[].content` (string or `text` parts)                                        |
+| OpenAI image / video | `prompt` (string or list of strings) of image and video generation requests          |
+| OpenAI Responses     | `instructions`, `input` (string), `input[].content`, `function_call_output` `output` |
+| Claude               | `system`, `messages[].content` text blocks, `tool_result` content                    |
+| Gemini               | `systemInstruction` / `system_instruction` and `contents[].parts[].text`             |
+| Gemini CLI           | The same Gemini fields inside the top-level `request` object                         |
+
+Left untouched on purpose: tool call arguments (`function_call.arguments`, Claude `tool_use.input`, Gemini `functionCall` / `functionResponse`), images, files, Claude `thinking` blocks, and Gemini parts marked `thought: true`, whose text is bound to a `thoughtSignature`. OpenAI Completions requests are covered through `messages`: the host converts them to chat completions before interceptors run. Common `skip_formats` values are the host's source format names, such as `openai`, `openai-response`, `claude`, `gemini`, `gemini-cli`, `openai-image` and `openai-video`.
+
+The placeholders are the library's built-in labels, `[EMAIL]`, `[PHONE]`, `[ID]`, `[BANK_CARD]`, `[IP]` and `[SECRET]`, unless `replacement` sets one label for every finding or `replacement_labels` sets one per entity type; a per-type label takes precedence over the global one. Pseudonymize mode is not affected: it reads the library's findings, not its rendering.
+
+Each interception pass that redacts something writes one line to the host's log with the JSON paths of the redacted fields, for example `privacy filter redacted 2 field(s): messages[0].content, system`; request text is never logged. These lines go through the host's `host.log` callback, so they follow CLIProxyAPI's log level, format and output and carry the request ID.
+
+Supported request shapes include:
 
 ```json
 {
@@ -451,7 +477,7 @@ Supported request shapes include OpenAI-style `messages` and `input` bodies:
 }
 ```
 
-Detection in both modes uses [packyme/privacy-filter](https://github.com/packyme/privacy-filter) with Gitleaks rules for secrets, connection strings, certificates and similar data. The rules are embedded at build time from `rules/gitleaks.toml`; at runtime the plugin takes `gitleaks_toml` from the configuration if set, else a `rules/gitleaks.toml` sidecar next to the shared library, else the embedded rules. Update the embedded rules with `make update-rules` and rebuild.
+Detection in both modes uses [rheodev/privacy-filter](https://github.com/rheodev/privacy-filter), a fork of [packyme/privacy-filter](https://github.com/packyme/privacy-filter) that fixes a panic on large requests, with Gitleaks rules for secrets, connection strings, certificates and similar data. The rules are embedded at build time from `rules/gitleaks.toml`; at runtime the plugin takes `gitleaks_toml` from the configuration if set, else a `rules/gitleaks.toml` sidecar next to the shared library, else the embedded rules. Update the embedded rules with `make update-rules` and rebuild.
 
 ### betterleaks
 
@@ -496,11 +522,11 @@ rules/gitleaks.toml     Built-in detection rules
 Dependency note:
 
 ```text
-privacyfilter => github.com/packyme/privacy-filter
+privacyfilter => github.com/rheodev/privacy-filter
 ```
 
 ## Credits
 
-- Core filtering logic: [packyme/privacy-filter](https://github.com/packyme/privacy-filter)
+- Core filtering logic: [rheodev/privacy-filter](https://github.com/rheodev/privacy-filter), forked from [packyme/privacy-filter](https://github.com/packyme/privacy-filter)
 - Plugin runtime: [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
 - AI learners and builders can join the Linux.do community: [linux.do](https://linux.do/)

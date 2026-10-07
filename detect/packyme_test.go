@@ -10,7 +10,7 @@ import (
 )
 
 func TestPackyme_UsesEntitiesNotRedacted(t *testing.T) {
-	f, err := filter.New("")
+	f, err := filter.New("", filter.Config{})
 	if err != nil {
 		t.Fatalf("filter.New: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestPackyme_UsesEntitiesNotRedacted(t *testing.T) {
 }
 
 func TestPackyme_IPv6MappedByText(t *testing.T) {
-	f, err := filter.New("")
+	f, err := filter.New("", filter.Config{})
 	if err != nil {
 		t.Fatalf("filter.New: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestPackyme_IPv6MappedByText(t *testing.T) {
 // by this layer either. Values are assembled at run time so the source
 // carries no literal address.
 func TestPackyme_KindTogglesDropFindings(t *testing.T) {
-	f, err := filter.New("")
+	f, err := filter.New("", filter.Config{})
 	if err != nil {
 		t.Fatalf("filter.New: %v", err)
 	}

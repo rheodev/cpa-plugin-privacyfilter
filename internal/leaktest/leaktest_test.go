@@ -54,8 +54,8 @@ func forward(t *testing.T, headers http.Header, body []byte) pipeline {
 		t.Fatalf("NewPatterns: %v", err)
 	}
 	// The shipped rule set, so this reference wiring is as strict as the
-	// plugin's own; filter.New("") would fall back to a smaller built-in set.
-	f, err := filter.New("../../rules/gitleaks.toml")
+	// plugin's own; filter.New("", filter.Config{}) would fall back to a smaller built-in set.
+	f, err := filter.New("../../rules/gitleaks.toml", filter.Config{})
 	if err != nil {
 		t.Fatalf("filter.New: %v", err)
 	}

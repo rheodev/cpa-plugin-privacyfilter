@@ -61,7 +61,7 @@ func (p *packymeDetector) Scan(text string) []Match {
 		}
 		value := text[e.Start:e.End]
 		kind := KindFromPackyme(e.Type)
-		// The library files both address families under one label; the text
+		// The library files both address families under one type; the text
 		// decides which one it is.
 		if kind == KindIPv4 && strings.Contains(value, ":") {
 			kind = KindIPv6
@@ -88,29 +88,32 @@ func (p *packymeDetector) keeps(kind Kind) bool {
 	return true
 }
 
-// Labels packyme/privacy-filter writes into Entity.Type (filter/pii.go).
-// Secret rules use the rule's own label from gitleaks.toml.
+// Type ids the library writes into Entity.Type (filter/pii.go and
+// filter/secrets.go). They are the keys of replacement_labels as well. Every
+// credential rule reports PackymeTypeSecret, whatever its rule id; the label
+// a type is rendered with in redact mode is not part of Entity.Type.
 const (
-	PackymeLabelEmail    = "[邮箱]"
-	PackymeLabelPhone    = "[电话]"
-	PackymeLabelIdentity = "[身份证]"
-	PackymeLabelIP       = "[IP]"
-	PackymeLabelBankCard = "[银行卡]"
+	PackymeTypeEmail    = "email"
+	PackymeTypePhone    = "phone"
+	PackymeTypeIdentity = "id"
+	PackymeTypeIP       = "ip"
+	PackymeTypeBankCard = "bank_card"
+	PackymeTypeSecret   = "secret"
 )
 
-// KindFromPackyme maps an Entity.Type label of packyme/privacy-filter to a
-// Kind. PackymeLabelEmail maps to KindEmail. PackymeLabelIP covers both
-// address families in the library; the wrapper decides between KindIPv4 and
-// KindIPv6 by parsing Entity.Text, which is why the label alone maps to
-// KindIPv4 here and the wrapper corrects it for colon-separated addresses.
-// Every other label, including phone numbers, identity numbers, bank cards
-// and all secret rules, maps to KindSecret and is rendered as an opaque
-// token.
-func KindFromPackyme(label string) Kind {
-	switch label {
-	case PackymeLabelEmail:
+// KindFromPackyme maps an Entity.Type of the library to a Kind.
+// PackymeTypeEmail maps to KindEmail. PackymeTypeIP covers both address
+// families in the library; the wrapper decides between KindIPv4 and KindIPv6
+// by parsing Entity.Text, which is why the type alone maps to KindIPv4 here
+// and the wrapper corrects it for colon-separated addresses. Every other
+// type, including phone numbers, identity numbers, bank cards, the credential
+// rules and any type a later library adds, maps to KindSecret and is rendered
+// as an opaque token.
+func KindFromPackyme(entityType string) Kind {
+	switch entityType {
+	case PackymeTypeEmail:
 		return KindEmail
-	case PackymeLabelIP:
+	case PackymeTypeIP:
 		return KindIPv4
 	}
 	return KindSecret

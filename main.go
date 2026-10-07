@@ -15,7 +15,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-var pluginVersion = "0.3.0-dev"
+var pluginVersion = "0.4.0-dev"
 
 // maxMappingTables bounds the number of live mapping tables. It is not
 // configurable: the tables are freed by the request.complete event, the TTL is
@@ -110,93 +110,111 @@ func buildPlugin(configYAML []byte, pluginDir string, rt *runtimeState) (plugina
 	}
 
 	return pluginapi.Plugin{
-		Metadata: pluginapi.Metadata{
-			Name:             pluginName,
-			Version:          pluginVersion,
-			Author:           "rheodev",
-			GitHubRepository: "https://github.com/rheodev/cpa-plugin-privacyfilter",
-			ConfigFields: []pluginapi.ConfigField{
-				{
-					Name:        "gitleaks_toml",
-					Type:        pluginapi.ConfigFieldTypeString,
-					Description: "Path to gitleaks.toml rules file. Empty uses built-in rules.",
-				},
-				{
-					Name:        "skip_models",
-					Type:        pluginapi.ConfigFieldTypeArray,
-					Description: "Model names to skip redaction for.",
-				},
-				{
-					Name:        "skip_formats",
-					Type:        pluginapi.ConfigFieldTypeArray,
-					Description: "Source format names to skip redaction for.",
-				},
-				{
-					Name:        "mode",
-					Type:        pluginapi.ConfigFieldTypeEnum,
-					EnumValues:  []string{string(ModeRedact), string(ModePseudonymize)},
-					Description: "redact reproduces the original one-way behaviour (default); pseudonymize replaces values with reversible pseudonyms and restores them on the way back.",
-				},
-				{
-					Name:        "salt_secret_path",
-					Type:        pluginapi.ConfigFieldTypeString,
-					Description: "Path to the HMAC secret file for pseudonymize mode. Empty uses pseudonym.secret next to the plugin's shared object; a relative path resolves the same way gitleaks_toml does.",
-				},
-				{
-					Name:        "terms",
-					Type:        pluginapi.ConfigFieldTypeArray,
-					Description: "Maintained list of literals or regexes to treat as confidential, each with a kind ({value|regex, kind, ignore_case}). Takes precedence over every other detection layer.",
-				},
-				{
-					Name:        "terms_file",
-					Type:        pluginapi.ConfigFieldTypeString,
-					Description: "Optional file with further terms, one per line (<literal> [kind] [ignore_case], or a YAML flow entry like {regex: ..., kind: host}). A relative path resolves next to the plugin's shared object. cmd/termsgen writes this format.",
-				},
-				{
-					Name:        "patterns",
-					Type:        pluginapi.ConfigFieldTypeObject,
-					Description: "Toggles for the structural detectors: ipv4, ipv6, cidr, mac, email, iban, url, uuid, hexid (machine-id, WWN), fingerprint (SSH SHA256), serial (labelled serial numbers). All default to true except url. ipv4, ipv6 and email also govern what the packyme layer reports.",
-				},
-				{
-					Name:        "path",
-					Type:        pluginapi.ConfigFieldTypeObject,
-					Description: "Segment-wise path pseudonymization: enabled (default false until the stream restore is confirmed live), replace_unknown (default true), preserve (segments added to the built-in list of ordinary directory names), filenames (terms: a file name is replaced only where a term matches inside it, the default; all: every file name outside the preserve list).",
-				},
-				{
-					Name:        "packyme",
-					Type:        pluginapi.ConfigFieldTypeObject,
-					Description: "Toggle for the packyme/privacy-filter detection layer: enabled (default true).",
-				},
-				{
-					Name:        "secrets",
-					Type:        pluginapi.ConfigFieldTypeObject,
-					Description: "Toggle for the betterleaks detection layer: enabled (default false) and rules_toml. Only has an effect in binaries built with the betterleaks tag.",
-				},
-				{
-					Name:        "restore",
-					Type:        pluginapi.ConfigFieldTypeObject,
-					Description: "Return-path options: stream (default true) enables pseudonym restoration for streamed responses.",
-				},
-				{
-					Name:        "limits",
-					Type:        pluginapi.ConfigFieldTypeObject,
-					Description: "max_body_bytes (default 33554432, 32 MiB) and mapping_ttl (default 30m, a Go duration string, measured from the last use of a conversation's mapping table; a quiet conversation loses its table after this time).",
-				},
-				{
-					Name:        "audit",
-					Type:        pluginapi.ConfigFieldTypeObject,
-					Description: "Local audit log of pseudonymize mode: path (empty = off; relative resolves next to the shared object) and max_bytes (default 10 MiB, then rotated to .1). Records every mapping table and every restored pseudonym in clear text, mode 0600; switch on for a check, off again after.",
-				},
-				{
-					Name:        "on_error",
-					Type:        pluginapi.ConfigFieldTypeEnum,
-					EnumValues:  []string{string(OnErrorBlock), string(OnErrorPassthrough)},
-					Description: "Forward-path behaviour when detection or parsing fails: block (default) terminates the request, passthrough forwards the body unfiltered. The return path always passes through on error.",
-				},
-			},
-		},
+		Metadata:     pluginMetadata(),
 		Capabilities: capabilitiesFor(p),
 	}, nil
+}
+
+// pluginMetadata describes the plugin and its configuration keys to the
+// host. The first five keys are the original plugin's, in its order; the
+// rest belong to pseudonymize mode. A reconfigure the host rejects is
+// answered with this metadata too, see handlePrivacyFilterRegister.
+func pluginMetadata() pluginapi.Metadata {
+	return pluginapi.Metadata{
+		Name:             pluginName,
+		Version:          pluginVersion,
+		Author:           "rheodev",
+		GitHubRepository: "https://github.com/rheodev/cpa-plugin-privacyfilter",
+		ConfigFields: []pluginapi.ConfigField{
+			{
+				Name:        "gitleaks_toml",
+				Type:        pluginapi.ConfigFieldTypeString,
+				Description: "Path to gitleaks.toml rules file. Empty uses built-in rules.",
+			},
+			{
+				Name:        "replacement",
+				Type:        pluginapi.ConfigFieldTypeString,
+				Description: "Global redaction label. Unset uses built-in labels; per-type labels take precedence.",
+			},
+			{
+				Name:        "replacement_labels",
+				Type:        pluginapi.ConfigFieldTypeObject,
+				Description: "Redaction labels keyed by entity type ID (email, secret, phone, id, bank_card, ip, or future types).",
+			},
+			{
+				Name:        "skip_models",
+				Type:        pluginapi.ConfigFieldTypeArray,
+				Description: "Model names to skip redaction for.",
+			},
+			{
+				Name:        "skip_formats",
+				Type:        pluginapi.ConfigFieldTypeArray,
+				Description: "Source format names to skip redaction for.",
+			},
+			{
+				Name:        "mode",
+				Type:        pluginapi.ConfigFieldTypeEnum,
+				EnumValues:  []string{string(ModeRedact), string(ModePseudonymize)},
+				Description: "redact reproduces the original one-way behaviour (default); pseudonymize replaces values with reversible pseudonyms and restores them on the way back.",
+			},
+			{
+				Name:        "salt_secret_path",
+				Type:        pluginapi.ConfigFieldTypeString,
+				Description: "Path to the HMAC secret file for pseudonymize mode. Empty uses pseudonym.secret next to the plugin's shared object; a relative path resolves the same way gitleaks_toml does.",
+			},
+			{
+				Name:        "terms",
+				Type:        pluginapi.ConfigFieldTypeArray,
+				Description: "Maintained list of literals or regexes to treat as confidential, each with a kind ({value|regex, kind, ignore_case}). Takes precedence over every other detection layer.",
+			},
+			{
+				Name:        "terms_file",
+				Type:        pluginapi.ConfigFieldTypeString,
+				Description: "Optional file with further terms, one per line (<literal> [kind] [ignore_case], or a YAML flow entry like {regex: ..., kind: host}). A relative path resolves next to the plugin's shared object. cmd/termsgen writes this format.",
+			},
+			{
+				Name:        "patterns",
+				Type:        pluginapi.ConfigFieldTypeObject,
+				Description: "Toggles for the structural detectors: ipv4, ipv6, cidr, mac, email, iban, url, uuid, hexid (machine-id, WWN), fingerprint (SSH SHA256), serial (labelled serial numbers). All default to true except url. ipv4, ipv6 and email also govern what the packyme layer reports.",
+			},
+			{
+				Name:        "path",
+				Type:        pluginapi.ConfigFieldTypeObject,
+				Description: "Segment-wise path pseudonymization: enabled (default false until the stream restore is confirmed live), replace_unknown (default true), preserve (segments added to the built-in list of ordinary directory names), filenames (terms: a file name is replaced only where a term matches inside it, the default; all: every file name outside the preserve list).",
+			},
+			{
+				Name:        "packyme",
+				Type:        pluginapi.ConfigFieldTypeObject,
+				Description: "Toggle for the packyme/privacy-filter detection layer: enabled (default true).",
+			},
+			{
+				Name:        "secrets",
+				Type:        pluginapi.ConfigFieldTypeObject,
+				Description: "Toggle for the betterleaks detection layer: enabled (default false) and rules_toml. Only has an effect in binaries built with the betterleaks tag.",
+			},
+			{
+				Name:        "restore",
+				Type:        pluginapi.ConfigFieldTypeObject,
+				Description: "Return-path options: stream (default true) enables pseudonym restoration for streamed responses.",
+			},
+			{
+				Name:        "limits",
+				Type:        pluginapi.ConfigFieldTypeObject,
+				Description: "max_body_bytes (default 33554432, 32 MiB) and mapping_ttl (default 30m, a Go duration string, measured from the last use of a conversation's mapping table; a quiet conversation loses its table after this time).",
+			},
+			{
+				Name:        "audit",
+				Type:        pluginapi.ConfigFieldTypeObject,
+				Description: "Local audit log of pseudonymize mode: path (empty = off; relative resolves next to the shared object) and max_bytes (default 10 MiB, then rotated to .1). Records every mapping table and every restored pseudonym in clear text, mode 0600; switch on for a check, off again after.",
+			},
+			{
+				Name:        "on_error",
+				Type:        pluginapi.ConfigFieldTypeEnum,
+				EnumValues:  []string{string(OnErrorBlock), string(OnErrorPassthrough)},
+				Description: "Forward-path behaviour when detection or parsing fails: block (default) terminates the request, passthrough forwards the body unfiltered. The return path always passes through on error.",
+			},
+		},
+	}
 }
 
 // capabilitiesFor declares what the plugin does for the host. In ModeRedact
