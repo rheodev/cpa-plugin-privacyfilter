@@ -517,6 +517,11 @@ func (p *privacyFilterPlugin) forward(session pseudo.Session, key string, table 
 	res.session = session
 	table.SetAvoid(p.isTermLiteral)
 	det := detect.NewComposite(table.Knows, p.layers...)
+	// Where a pseudonym of the table stands in the text, nothing that
+	// overlaps it is detected: the second pass of a request and a request
+	// that quotes a pseudonym must not pseudonymize the plugin's own output
+	// a second time, and Knows alone sees only a candidate that equals one.
+	det.Inert = table.PseudonymSpans
 	counts := make(map[detect.Kind]int)
 	kept := make(map[detect.Kind]int)
 	res.table = table

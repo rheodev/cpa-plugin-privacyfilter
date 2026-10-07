@@ -98,8 +98,8 @@ type Match struct {
 	Value string
 	// Kind selects the pseudonym renderer.
 	Kind Kind
-	// excluded marks a match that Composite.Exclude accepted. It keeps its
-	// place in Merge, so a match of a later layer that overlaps it is
+	// excluded marks a match that Composite.Exclude accepted, or one that
+	// overlaps a span Composite.Inert reported. It keeps its place in Merge, so a match of a later layer that overlaps it is
 	// suppressed exactly as it would be by a reported match, and it is
 	// dropped from the result afterwards. That is what keeps a second
 	// forward pass over pseudonymized text a no-op: a lower layer that
@@ -378,12 +378,20 @@ func hasTokenBoundaries(text string, start, end int) bool {
 // conversation's mapping table, so a pseudonym the plugin itself produced is
 // left alone (idempotence over the history of a conversation) while a real
 // value that merely has the shape of one, such as a node address out of the
-// carrier-grade NAT range, is replaced like any other. An excluded match
-// still takes part in the precedence: it shields its span from the matches
-// of later layers, see Match.excluded.
+// carrier-grade NAT range, is replaced like any other. Inert, when set,
+// names the spans of text that are the plugin's own output, the table's
+// pseudonyms where they stand on their own; every match that overlaps one
+// is excluded as well, whether it is a prefix of a pseudonym, as the
+// network is in its own pseudonym once the collision suffix follows it, or
+// a wider span around one, as a credential rule matches around a secret
+// token. Exclude judges the value, Inert the place; together they keep a
+// pass over pseudonymized text a no-op. An excluded match still takes part
+// in the precedence: it shields its span from the matches of later layers,
+// see Match.excluded.
 type Composite struct {
 	Layers  []Detector
 	Exclude func(value string) bool
+	Inert   func(text string) [][2]int
 }
 
 var _ Detector = (*Composite)(nil)
@@ -464,11 +472,15 @@ func containsEarlier(earlier []Match, m Match) bool {
 	return false
 }
 
-// Scan implements Detector: it scans with every layer, applies Exclude, and
-// returns Merge over the layers in order.
+// Scan implements Detector: it scans with every layer, applies Exclude and
+// Inert, and returns Merge over the layers in order.
 func (c *Composite) Scan(text string) []Match {
 	if c == nil || len(c.Layers) == 0 {
 		return nil
+	}
+	var inert [][2]int
+	if c.Inert != nil {
+		inert = c.Inert(text)
 	}
 	layers := make([][]Match, 0, len(c.Layers))
 	excluded := 0
@@ -477,13 +489,13 @@ func (c *Composite) Scan(text string) []Match {
 			continue
 		}
 		hits := d.Scan(text)
-		if c.Exclude != nil && len(hits) > 0 {
+		if (c.Exclude != nil || len(inert) > 0) && len(hits) > 0 {
 			// A copy, because Merge leaves its arguments alone and a
 			// detector may hand out a slice it keeps.
 			marked := make([]Match, len(hits))
 			copy(marked, hits)
 			for i := range marked {
-				if c.Exclude(marked[i].Value) {
+				if (c.Exclude != nil && c.Exclude(marked[i].Value)) || overlapsSpan(inert, marked[i]) {
 					marked[i].excluded = true
 					excluded++
 				}
@@ -506,4 +518,12 @@ func (c *Composite) Scan(text string) []Match {
 		return nil
 	}
 	return out
+}
+
+// overlapsSpan reports whether m shares a byte with one of spans, which are
+// sorted by start and disjoint, as Table.PseudonymSpans returns them. A
+// span that ends where m begins does not overlap.
+func overlapsSpan(spans [][2]int, m Match) bool {
+	i := sort.Search(len(spans), func(i int) bool { return spans[i][1] > m.Start })
+	return i < len(spans) && spans[i][0] < m.End
 }

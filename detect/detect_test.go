@@ -189,6 +189,41 @@ func TestComposite_ExcludedShieldsLaterLayers(t *testing.T) {
 	}
 }
 
+// TestComposite_InertSpansShieldOverlaps: Inert names the spans of the
+// plugin's own output, and no candidate that overlaps one survives: the
+// network that is a prefix of its own pseudonym once the collision suffix
+// follows it, and a credential rule's span around a secret token. Exclude
+// sees neither, because neither equals a pseudonym. A candidate beside the
+// spans is kept, and without Inert the two go through, which is the fault.
+func TestComposite_InertSpansShieldOverlaps(t *testing.T) {
+	suffixed := "100.64.0.0/10" + "#1024"
+	token := "PF_0badcafe"
+	text := "net " + suffixed + " token: " + token + " and 10.1.2.0/24"
+	inert := func(s string) [][2]int {
+		var out [][2]int
+		for _, p := range []string{suffixed, token} {
+			i := strings.Index(s, p)
+			out = append(out, [2]int{i, i + len(p)})
+		}
+		return out
+	}
+	c := detect.NewComposite(
+		func(v string) bool { return v == suffixed || v == token },
+		fakeDetector{"patterns", detect.KindCIDR, []string{"100.64.0.0/10", "10.1.2.0/24"}},
+		fakeDetector{"secrets", detect.KindSecret, []string{"token: " + token}},
+	)
+	c.Inert = inert
+	got := c.Scan(text)
+	assertDisjointSorted(t, text, got)
+	if len(got) != 1 || got[0].Value != "10.1.2.0/24" {
+		t.Fatalf("Scan = %+v, want only the network beside the inert spans", got)
+	}
+	c.Inert = nil
+	if got := c.Scan(text); len(got) != 3 {
+		t.Fatalf("Scan without Inert = %+v, want the prefix and the wider span to pass, the fault this guards", got)
+	}
+}
+
 func TestTerms_FindsCorpus(t *testing.T) {
 	d, err := detect.NewTerms(detect.TermsConfig{WordBoundary: true, Terms: fixtures.DetectTerms()})
 	if err != nil {

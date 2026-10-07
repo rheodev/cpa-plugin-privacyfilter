@@ -316,6 +316,41 @@ func (t *Table) Restorer() Restorer {
 	return &t.restorer
 }
 
+// PseudonymSpans returns the byte spans of text at which pseudonyms of the
+// table stand on their own, by the rule of Restore, in order of position,
+// each pseudonym of a run as a span of its own. The forward pass hands it
+// to the composite as the spans it must not detect in: a candidate that
+// overlaps one is the plugin's own output or wraps it, and replacing it
+// would pseudonymize a pseudonym. Knows catches a candidate that equals a
+// pseudonym; this catches the rest: the network that stands as a prefix in
+// its own pseudonym when the collision suffix "#<attempt>" follows it, or
+// the span of a credential rule around a secret token.
+func (t *Table) PseudonymSpans(text string) [][2]int {
+	tr := t.currentTrie()
+	if tr == nil || tr.maxLen == 0 || text == "" {
+		return nil
+	}
+	var spans [][2]int
+	for i := 0; i < len(text); {
+		if !tr.starts[text[i]] || leftGlued(text, i, "") {
+			i++
+			continue
+		}
+		hits, ends, status := tr.chain(text, i, true)
+		if len(hits) == 0 || !(status == chainAlone || status == chainAtEnd) {
+			i++
+			continue
+		}
+		pos := i
+		for _, end := range ends {
+			spans = append(spans, [2]int{pos, end})
+			pos = end
+		}
+		i = ends[len(ends)-1]
+	}
+	return spans
+}
+
 // RestoredHits returns how often each pseudonym of the table was swapped
 // back so far, keyed by pseudonym, or nil when nothing was ever restored.
 // The map is a copy. The store diffs two snapshots of it to report the

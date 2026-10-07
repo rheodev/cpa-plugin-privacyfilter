@@ -328,6 +328,31 @@ func TestTable_SessionIsTheStoreKey(t *testing.T) {
 	}
 }
 
+// TestTable_PseudonymSpans: the spans at which the table's pseudonyms stand
+// on their own in a text, by the rule of Restore: one followed by the "#"
+// of a collision suffix or by a delimiter is found, one glued into a longer
+// word is not, and an empty table finds nothing.
+func TestTable_PseudonymSpans(t *testing.T) {
+	if got := mapping.NewTable(fakeGen{}).PseudonymSpans("nothing here"); got != nil {
+		t.Fatalf("an empty table found spans: %v", got)
+	}
+	tb := mapping.NewTable(fakeGen{})
+	a := tb.Lookup(detect.KindHost, "athene.lan")
+	b := tb.Lookup(detect.KindIPv4, "10.1.2.3")
+	text := "ping " + a + "#1024, then " + b + " and " + a + "x end"
+	ia, ib := strings.Index(text, a), strings.Index(text, b)
+	want := [][2]int{{ia, ia + len(a)}, {ib, ib + len(b)}}
+	got := tb.PseudonymSpans(text)
+	if len(got) != len(want) {
+		t.Fatalf("PseudonymSpans = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("PseudonymSpans = %v, want %v", got, want)
+		}
+	}
+}
+
 func TestRestorer_Holdback(t *testing.T) {
 	tb := mapping.NewTable(fakeGen{})
 	p := tb.Lookup(detect.KindHost, "athene.lan") // "host:athene.lan:0"

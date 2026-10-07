@@ -41,24 +41,10 @@ func newPseudoPlugin(t *testing.T, override map[string]any) *privacyFilterPlugin
 		t.Fatalf("write secret: %v", err)
 	}
 
-	terms := make([]any, 0, len(fixtures.Terms))
-	for _, term := range fixtures.Terms {
-		entry := map[string]any{"kind": string(term.Kind)}
-		if term.Value != "" {
-			entry["value"] = term.Value
-		} else {
-			entry["regex"] = term.Regex
-		}
-		if term.IgnoreCase {
-			entry["ignore_case"] = true
-		}
-		terms = append(terms, entry)
-	}
-
 	doc := map[string]any{
 		"mode":             string(ModePseudonymize),
 		"salt_secret_path": secretPath,
-		"terms":            terms,
+		"terms":            fixtureTermsDoc(),
 		"patterns": map[string]any{
 			"ipv4": true, "ipv6": true, "cidr": true,
 			"mac": true, "email": true, "iban": true, "url": false,
@@ -86,6 +72,25 @@ func newPseudoPlugin(t *testing.T, override map[string]any) *privacyFilterPlugin
 		t.Fatalf("RequestInterceptor is %T, want *privacyFilterPlugin", plug.Capabilities.RequestInterceptor)
 	}
 	return p
+}
+
+// fixtureTermsDoc returns the fixture's terms as the YAML document lists
+// them, so a test can add a term before it builds the plugin.
+func fixtureTermsDoc() []any {
+	terms := make([]any, 0, len(fixtures.Terms))
+	for _, term := range fixtures.Terms {
+		entry := map[string]any{"kind": string(term.Kind)}
+		if term.Value != "" {
+			entry["value"] = term.Value
+		} else {
+			entry["regex"] = term.Regex
+		}
+		if term.IgnoreCase {
+			entry["ignore_case"] = true
+		}
+		terms = append(terms, entry)
+	}
+	return terms
 }
 
 // fixtureBody marshals the shared request fixture.
@@ -539,6 +544,55 @@ func TestPseudonymizeRequest_SecondPassIsQuiet(t *testing.T) {
 	}
 	if got := p.tableOf(t, "req-2").Len(); got != rows {
 		t.Fatalf("the second pass grew the conversation's table from %d to %d rows", rows, got)
+	}
+}
+
+// TestPseudonymizeRequest_SecondPassIsQuietOverASuffixedPseudonym: a text
+// that names the marker range itself, as a note about the plugin does, is
+// a network to the pattern layer; the loader refuses it as a term. Its
+// pseudonym can only be the network with the collision suffix appended,
+// because every attempt masks back onto the range, and in that pseudonym
+// the network stands as a prefix with the "#" for a boundary. The first
+// pass writes it; a second pass over the output, in the hook after
+// authentication or as the next request, used to see the prefix as a
+// network and append the suffix once more, five bytes every pass, as the
+// log of the 7th of October showed. The pseudonym's span is inert now.
+func TestPseudonymizeRequest_SecondPassIsQuietOverASuffixedPseudonym(t *testing.T) {
+	const marker = "100.64.0.0/10"
+	suffixed := marker + "#1024"
+	p := newPseudoPlugin(t, nil)
+	_, req := fixtureBody(t, fixtures.SessionA)
+	req["messages"] = []any{map[string]any{"role": "user", "content": "The range " + marker + " is the marker range of the pseudonyms."}}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := beforeAuth(t, p, "req-1", body)
+	if first.Terminate || first.Body == nil {
+		t.Fatalf("the first pass did not rewrite: %+v", first)
+	}
+	table := p.tableOf(t, "req-1")
+	if !table.Has(detect.KindCIDR, marker) {
+		t.Fatal("the pattern layer did not report the marker range as a network")
+	}
+	if got := table.Lookup(detect.KindCIDR, marker); got != suffixed {
+		t.Fatalf("the marker range got the pseudonym %q, want the range with the collision suffix", got)
+	}
+	out := string(first.Body)
+	if strings.Count(out, suffixed) != 1 || strings.Contains(out, suffixed+"#") {
+		t.Fatalf("the first pass wrote the suffixed pseudonym %d times or doubled it:\n%s", strings.Count(out, suffixed), out)
+	}
+	rows := table.Len()
+
+	if again := afterAuth(t, p, "req-1", first.Body); again.Body != nil {
+		t.Fatalf("the second hook changed the body:\n%s", again.Body)
+	}
+	if next := beforeAuth(t, p, "req-2", first.Body); next.Body != nil && !bytes.Equal(next.Body, first.Body) {
+		t.Fatalf("the next request changed the body:\n%s", next.Body)
+	}
+	if got := table.Len(); got != rows {
+		t.Fatalf("the second passes grew the table from %d to %d rows", rows, got)
 	}
 }
 
