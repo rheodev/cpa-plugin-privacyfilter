@@ -7,9 +7,9 @@ require (
 	github.com/sirupsen/logrus v1.9.4
 	golang.org/x/sys v0.42.0
 	gopkg.in/yaml.v3 v3.0.1
-	privacyfilter v0.0.0-20260609060647-64b8de3c2060
+	privacyfilter v0.0.0-20261007091522-26ffa7774c88
 )
 
 require github.com/BurntSushi/toml v1.6.0 // indirect
 
-replace privacyfilter => github.com/rheodev/privacy-filter v0.0.0-20261007070111-0bf6bb65c8b4
+replace privacyfilter => github.com/rheodev/privacy-filter v0.0.0-20261007091522-26ffa7774c88

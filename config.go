@@ -16,9 +16,78 @@ const privacyFilterProvider = "privacyfilter"
 const pluginName = "privacyfilter"
 
 type privacyFilterConfig struct {
-	GitleaksTOML string   `yaml:"gitleaks_toml"`
-	SkipModels   []string `yaml:"skip_models"`
-	SkipFormats  []string `yaml:"skip_formats"`
+	GitleaksTOML      string            `yaml:"gitleaks_toml"`
+	SkipModels        []string          `yaml:"skip_models"`
+	SkipFormats       []string          `yaml:"skip_formats"`
+	Replacement       string            `yaml:"replacement"`
+	ReplacementLabels map[string]string `yaml:"replacement_labels"`
+}
+
+// replacementLabel prevents YAML's string decoder from coercing booleans and
+// numbers into labels. A null field is left unset by the YAML decoder.
+type replacementLabel string
+
+func (label *replacementLabel) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.ScalarNode || node.Tag != "!!str" {
+		return fmt.Errorf("replacement label must be a string")
+	}
+	if strings.TrimSpace(node.Value) == "" {
+		return fmt.Errorf("replacement label must not be empty or whitespace-only")
+	}
+	*label = replacementLabel(node.Value)
+	return nil
+}
+
+type replacementLabels map[string]string
+
+func (labels *replacementLabels) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("replacement_labels must be a mapping")
+	}
+	if len(node.Content) == 0 {
+		return nil
+	}
+	values := make(map[string]string, len(node.Content)/2)
+	for i := 0; i < len(node.Content); i += 2 {
+		key, value := node.Content[i], node.Content[i+1]
+		if key.Kind != yaml.ScalarNode || key.Tag != "!!str" {
+			return fmt.Errorf("replacement_labels keys must be strings")
+		}
+		if key.Value == "" || strings.TrimSpace(key.Value) != key.Value {
+			return fmt.Errorf("replacement_labels key %q must be nonempty without edge whitespace", key.Value)
+		}
+		if _, exists := values[key.Value]; exists {
+			return fmt.Errorf("duplicate replacement_labels key %q", key.Value)
+		}
+		var label replacementLabel
+		if err := label.UnmarshalYAML(value); err != nil {
+			return fmt.Errorf("replacement_labels[%q]: %w", key.Value, err)
+		}
+		values[key.Value] = string(label)
+	}
+	*labels = values
+	return nil
+}
+
+func (cfg *privacyFilterConfig) UnmarshalYAML(node *yaml.Node) error {
+	var values struct {
+		GitleaksTOML      string            `yaml:"gitleaks_toml"`
+		SkipModels        []string          `yaml:"skip_models"`
+		SkipFormats       []string          `yaml:"skip_formats"`
+		Replacement       replacementLabel  `yaml:"replacement"`
+		ReplacementLabels replacementLabels `yaml:"replacement_labels"`
+	}
+	if err := node.Decode(&values); err != nil {
+		return err
+	}
+	*cfg = privacyFilterConfig{
+		GitleaksTOML:      values.GitleaksTOML,
+		SkipModels:        values.SkipModels,
+		SkipFormats:       values.SkipFormats,
+		Replacement:       string(values.Replacement),
+		ReplacementLabels: map[string]string(values.ReplacementLabels),
+	}
+	return nil
 }
 
 func defaultConfig() privacyFilterConfig {
@@ -94,7 +163,10 @@ func newFilter(pluginDir string, cfg privacyFilterConfig) (*filter.Filter, error
 		tomlPath = tmpPath
 	}
 
-	f, err := filter.New(tomlPath)
+	f, err := filter.New(tomlPath, filter.Config{
+		Replacement:       cfg.Replacement,
+		ReplacementLabels: cfg.ReplacementLabels,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create privacy filter: %w", err)
 	}

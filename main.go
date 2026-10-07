@@ -39,6 +39,16 @@ func buildPlugin(configYAML []byte, pluginDir string) (pluginapi.Plugin, error) 
 					Description: "Path to gitleaks.toml rules file. Empty uses built-in rules.",
 				},
 				{
+					Name:        "replacement",
+					Type:        pluginapi.ConfigFieldTypeString,
+					Description: "Global redaction label. Unset uses built-in labels; per-type labels take precedence.",
+				},
+				{
+					Name:        "replacement_labels",
+					Type:        pluginapi.ConfigFieldTypeObject,
+					Description: "Redaction labels keyed by entity type ID (email, secret, phone, id, bank_card, ip, or future types).",
+				},
+				{
 					Name:        "skip_models",
 					Type:        pluginapi.ConfigFieldTypeArray,
 					Description: "Model names to skip redaction for.",
