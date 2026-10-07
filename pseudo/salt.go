@@ -30,10 +30,46 @@ const (
 // sessionSuffix is the pattern the host uses on metadata.user_id.
 var sessionSuffix = regexp.MustCompile(`_session_([a-f0-9-]+)$`)
 
-// Session identifies one conversation for salt derivation.
+// Session identifies one conversation for salt derivation and for the
+// mapping table: the conversation identifier, where it came from, and the
+// caller scope of the host.
 type Session struct {
 	ID     string
 	Source SessionSource
+	// Caller is the host's caller scope, a SHA-256 over the credential the
+	// client authenticated with, taken from the metadata of the request;
+	// empty when the host sent none, which is a proxy without inbound
+	// authentication. See CallerScope.
+	Caller string
+}
+
+// Key returns what the salt and the mapping table are keyed by. The
+// conversation identifier is the client's claim: a header, a field of the
+// body or the head of the conversation, all of which another client can
+// send as well. The caller scope is the host's, derived from the credential
+// it authenticated, so a claimed identifier can only ever reach a table of
+// the same caller. Without a caller scope the identifier alone is the key,
+// as it was before the scope existed, so a host without inbound
+// authentication derives the same salts as ever.
+func (s Session) Key() string {
+	if s.Caller == "" {
+		return s.ID
+	}
+	return s.Caller + "\x00" + s.ID
+}
+
+// MetadataCallerScope is the key under which the host hands the caller
+// scope to a plugin in the metadata of a request: CallerScopeMetadataKey of
+// the host's executor package, a SHA-256 over the authenticated proxy
+// credential. The value is repeated here because importing that package
+// would pull the host's translators into the shared library.
+const MetadataCallerScope = "caller_scope"
+
+// CallerScope returns the caller scope of a request's metadata, trimmed, or
+// "" when the host sent none or something other than a string.
+func CallerScope(metadata map[string]any) string {
+	v, _ := metadata[MetadataCallerScope].(string)
+	return strings.TrimSpace(v)
 }
 
 // IdentifySession finds the conversation identifier in the order the host

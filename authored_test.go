@@ -134,8 +134,8 @@ func assertMemoryConsistent(t *testing.T, p *privacyFilterPlugin, requestID stri
 	t.Helper()
 	table := p.tableOf(t, requestID)
 	session := pseudo.IdentifySession(http.Header{}, body)
-	gen := pseudo.NewGenerator(p.secret, pseudo.DeriveSalt(p.secret, session.ID), p.renderers)
-	mem := p.store.Memory(session.ID)
+	gen := pseudo.NewGenerator(p.secret, pseudo.DeriveSalt(p.secret, session.Key()), p.renderers)
+	mem := p.store.Memory(session.Key())
 	for _, e := range table.Entries() {
 		key := string(gen.Digest(e.Kind, e.Original, 0)[:mapping.MemoryKeyLen])
 		if mem.Authored(key) {

@@ -113,7 +113,7 @@ func TestPseudonymize_TermsFileMerged(t *testing.T) {
 		t.Fatalf("termCount = %d, want 3", p.termCount)
 	}
 	body := []byte(`{"model":"m","messages":[{"role":"user","content":"ssh p14.local; ssh p14; ssh nuc; p140 bleibt"}]}`)
-	res, err := p.runForward(nil, body)
+	res, err := p.runForward(nil, nil, body)
 	if err != nil {
 		t.Fatalf("runForward: %v", err)
 	}

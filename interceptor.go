@@ -369,7 +369,7 @@ func (p *privacyFilterPlugin) pseudonymizeRequest(req pluginapi.RequestIntercept
 		return resp
 	}
 
-	res, err := p.runForward(req.Headers, body)
+	res, err := p.runForward(req.Headers, req.Metadata, body)
 	if err != nil {
 		// A table opened for this request alone is dropped again, so a
 		// blocked request leaves nothing behind; a table the conversation
@@ -394,6 +394,7 @@ func (p *privacyFilterPlugin) pseudonymizeRequest(req pluginapi.RequestIntercept
 	log.WithFields(log.Fields{
 		"source_format":  req.SourceFormat,
 		"session_source": string(res.session.Source),
+		"caller_scoped":  res.session.Caller != "",
 		"replacements":   formatCounts(res.counts),
 		"kept":           formatCounts(res.kept),
 		"distinct":       len(res.added),
@@ -408,11 +409,16 @@ func (p *privacyFilterPlugin) pseudonymizeRequest(req pluginapi.RequestIntercept
 // that carries request content, and it turns a panic in a detection layer into
 // an ordinary error so on_error decides what happens instead of the host
 // crashing.
-func (p *privacyFilterPlugin) runForward(headers http.Header, body []byte) (res forwardResult, err error) {
+func (p *privacyFilterPlugin) runForward(headers http.Header, metadata map[string]any, body []byte) (res forwardResult, err error) {
 	defer recoverInto(&err, errForwardPanic)
 
+	// The conversation identifier comes from the client, the caller scope
+	// from the host; salt and table are keyed by both, so an identifier
+	// another caller sends reaches a table of its own, see pseudo.Session.Key.
 	res.session = pseudo.IdentifySession(headers, body)
-	gen := pseudo.NewGenerator(p.secret, pseudo.DeriveSalt(p.secret, res.session.ID), p.renderers).WithNetworks(p.networks)
+	res.session.Caller = pseudo.CallerScope(metadata)
+	key := res.session.Key()
+	gen := pseudo.NewGenerator(p.secret, pseudo.DeriveSalt(p.secret, key), p.renderers).WithNetworks(p.networks)
 	if gen == nil {
 		return res, errors.New("privacyfilter: pseudonym generator unavailable")
 	}
@@ -423,7 +429,7 @@ func (p *privacyFilterPlugin) runForward(headers http.Header, body []byte) (res 
 	// pseudonym, so a value the plugin produced is left alone and a real
 	// value that merely looks like one, a node address out of the
 	// carrier-grade NAT range, is replaced.
-	table := p.store.Open(res.session.ID, gen)
+	table := p.store.Open(key, gen)
 	table.SetAvoid(p.isTermLiteral)
 	det := detect.NewComposite(table.Knows, p.layers...)
 	counts := make(map[detect.Kind]int)
@@ -440,7 +446,7 @@ func (p *privacyFilterPlugin) runForward(headers http.Header, body []byte) (res 
 	// of the conversation, which values the model wrote before anybody
 	// else did; the rewriting pass below uses its matches and leaves those
 	// values standing. See authorship.
-	auth := newAuthorship(gen, p.store.Memory(res.session.ID), table, p.terms, p.networks, payload.Roles(body))
+	auth := newAuthorship(gen, p.store.Memory(key), table, p.terms, p.networks, payload.Roles(body))
 	if _, _, errRead := payload.Walk(body, opts, func(path payload.Path, text string) (string, bool) {
 		auth.observe(det, path, text)
 		return text, false

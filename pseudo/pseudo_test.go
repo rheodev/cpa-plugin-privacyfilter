@@ -374,6 +374,53 @@ func TestDeriveSalt_DependsOnSecretAndSession(t *testing.T) {
 	}
 }
 
+// TestSessionKey_CallerScopeBoundsTheIdentifier: the key of salt and table
+// is the identifier alone without a caller scope, so a host without
+// inbound authentication derives what it always did, and the scope joined
+// to it otherwise, so one identifier under two callers is two keys.
+func TestSessionKey_CallerScopeBoundsTheIdentifier(t *testing.T) {
+	plain := pseudo.Session{ID: fixtures.SessionA, Source: pseudo.SourceHeader}
+	if plain.Key() != fixtures.SessionA {
+		t.Fatalf("Key without a caller = %q, want the identifier alone", plain.Key())
+	}
+	a := pseudo.Session{ID: fixtures.SessionA, Source: pseudo.SourceHeader, Caller: "caller-a"}
+	b := pseudo.Session{ID: fixtures.SessionA, Source: pseudo.SourceHeader, Caller: "caller-b"}
+	if a.Key() == plain.Key() || a.Key() == b.Key() || b.Key() == plain.Key() {
+		t.Fatalf("keys not distinct: %q, %q, %q", plain.Key(), a.Key(), b.Key())
+	}
+	if a.Key() != (pseudo.Session{ID: fixtures.SessionA, Caller: "caller-a"}).Key() {
+		t.Fatal("key not deterministic")
+	}
+	if bytes.Equal(pseudo.DeriveSalt(fixtures.Secret, a.Key()), pseudo.DeriveSalt(fixtures.Secret, b.Key())) {
+		t.Fatal("salt equal for one conversation under two callers")
+	}
+	if bytes.Equal(pseudo.DeriveSalt(fixtures.Secret, a.Key()), pseudo.DeriveSalt(fixtures.Secret, plain.Key())) {
+		t.Fatal("salt equal with and without a caller")
+	}
+}
+
+// TestCallerScope_ReadsTheHostsMetadata: the scope is the string under the
+// host's key, trimmed; anything else is no scope.
+func TestCallerScope_ReadsTheHostsMetadata(t *testing.T) {
+	cases := []struct {
+		name string
+		meta map[string]any
+		want string
+	}{
+		{"nil", nil, ""},
+		{"empty", map[string]any{}, ""},
+		{"string", map[string]any{pseudo.MetadataCallerScope: " 0a1b2c "}, "0a1b2c"},
+		{"blank", map[string]any{pseudo.MetadataCallerScope: "   "}, ""},
+		{"not a string", map[string]any{pseudo.MetadataCallerScope: 42}, ""},
+		{"other keys", map[string]any{"request_path": "/v1/messages"}, ""},
+	}
+	for _, tc := range cases {
+		if got := pseudo.CallerScope(tc.meta); got != tc.want {
+			t.Errorf("%s: CallerScope = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestResolveSecretPath(t *testing.T) {
 	dir := "/CLIProxyAPI/plugins/linux/amd64"
 	if got := pseudo.ResolveSecretPath(dir, ""); got != filepath.Join(dir, pseudo.DefaultSecretFile) {

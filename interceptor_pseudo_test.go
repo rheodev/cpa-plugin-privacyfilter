@@ -553,6 +553,80 @@ func TestPseudonymizeRequest_SkipFormat(t *testing.T) {
 	}
 }
 
+// TestPseudonymizeRequest_CallerScopeSeparatesTables: the conversation
+// identifier is the client's claim, the caller scope the host's. One
+// identifier under two callers gets two tables and two salts, so a response
+// of the second caller that carries a pseudonym of the first restores
+// nothing; the same identifier under the same caller shares the table as
+// before, and a request without a scope keys by the identifier alone.
+func TestPseudonymizeRequest_CallerScopeSeparatesTables(t *testing.T) {
+	p := newPseudoPlugin(t, nil)
+	body, _ := fixtureBody(t, fixtures.SessionA)
+	send := func(requestID, caller string) pluginapi.RequestInterceptResponse {
+		t.Helper()
+		req := pluginapi.RequestInterceptRequest{
+			RequestID:    requestID,
+			SourceFormat: "claude",
+			Model:        "claude-fable-5-1",
+			Headers:      http.Header{},
+			Body:         body,
+		}
+		if caller != "" {
+			req.Metadata = map[string]any{pseudo.MetadataCallerScope: caller}
+		}
+		resp, err := p.InterceptRequestBeforeAuth(context.Background(), req)
+		if err != nil {
+			t.Fatalf("InterceptRequestBeforeAuth(%s): %v", requestID, err)
+		}
+		if resp.Terminate || resp.Body == nil {
+			t.Fatalf("%s: expected a rewritten body, got %+v", requestID, resp)
+		}
+		return resp
+	}
+
+	a := send("req-a", "scope-a")
+	b := send("req-b", "scope-b")
+	plain := send("req-plain", "")
+	again := send("req-a2", "scope-a")
+
+	if p.store.Len() != 3 {
+		t.Fatalf("store holds %d tables, want 3: one per caller and one without a scope", p.store.Len())
+	}
+	if p.tableOf(t, "req-a") != p.tableOf(t, "req-a2") {
+		t.Fatal("one conversation under one caller got two tables")
+	}
+	if p.tableOf(t, "req-a") == p.tableOf(t, "req-b") || p.tableOf(t, "req-a") == p.tableOf(t, "req-plain") {
+		t.Fatal("a table is shared across callers")
+	}
+	if bytes.Equal(a.Body, b.Body) || bytes.Equal(a.Body, plain.Body) {
+		t.Fatal("pseudonyms equal across callers, the salt ignores the scope")
+	}
+	if !bytes.Equal(a.Body, again.Body) {
+		t.Fatal("pseudonyms differ within one caller")
+	}
+
+	// A response for caller b that repeats the pseudonyms of caller a:
+	// nothing of a's table comes back, while a's own response is restored.
+	upstream, pseudonyms := upstreamResponse(t, p.tableOf(t, "req-a"))
+	own := interceptResponse(t, p, "req-a", "claude", upstream)
+	foreign := interceptResponse(t, p, "req-b", "claude", upstream)
+	foreignBody := foreign.Body
+	if len(foreignBody) == 0 {
+		foreignBody = upstream // no body means the host keeps what the upstream sent
+	}
+	for kind, original := range responseOriginals {
+		if !bytes.Contains(own.Body, []byte(original)) {
+			t.Errorf("%s: the caller's own response did not restore %q", kind, original)
+		}
+		if bytes.Contains(foreignBody, []byte(original)) {
+			t.Errorf("%s: a foreign caller's response restored %q", kind, original)
+		}
+		if !bytes.Contains(foreignBody, []byte(pseudonyms[kind])) {
+			t.Errorf("%s: a foreign caller's response lost the pseudonym %q instead of passing it through", kind, pseudonyms[kind])
+		}
+	}
+}
+
 // TestBuildPlugin_MissingSecretFails: registration fails when the secret file
 // is absent, so the plugin never silently forwards plain text.
 func TestBuildPlugin_MissingSecretFails(t *testing.T) {
