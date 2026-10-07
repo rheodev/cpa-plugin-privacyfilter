@@ -402,6 +402,24 @@ Behoben mit `9d14e5a`.
 
 ---
 
+# Der zweite Durchlauf ersetzt das eigene Pseudonym noch einmal
+
+Nach dem Rollout von `v0.4.18-dev` am 7. Oktober meldete das Log zu jeder Anfrage eine Zeile `request pseudonymized after auth`, in einer Sitzung mit `cidr=1 secret=1` und zehn Bytes weniger, in der anderen mit `cidr=3` und fünfzehn Bytes mehr, bei jeder Anfrage dieselben Zahlen und nur beim ersten Mal mit einer neuen Tabellenzeile. Die Eingangsgröße des zweiten Durchlaufs war Byte für Byte die Ausgangsgröße des ersten, der Host hatte also nichts eingefügt: der zweite Durchlauf fand in der Ausgabe des ersten etwas, das der erste nicht gefunden hatte.
+
+Die Ursache liegt an zwei Stellen. Jenseits von `maxGeneratorAttempts` hängt die Tabelle `#<attempt>` an das Pseudonym, und für die Markierungsreihe der Adresspseudonyme selbst, im Text einer Notiz über das Plugin genannt, kann kein anderes Pseudonym entstehen: jeder Versuch maskiert die Adresse auf die Reihe zurück, erst der Anhang unterscheidet das Pseudonym vom Wert; der Lader weist die Reihe als Term aus demselben Grund ab, die Musterebene erkennt sie im Text trotzdem. In diesem Pseudonym steht die Reihe als Präfix, und das `#` dahinter ist für die Musterebene eine Wortgrenze; `Knows` prüft den Kandidaten nur auf Gleichheit mit einem Pseudonym, das Präfix ist keines, und `Lookup` liefert für den bekannten Wert dasselbe Pseudonym, also hängt jeder Durchlauf den Anhang noch einmal an, fünf Bytes je Vorkommen. Dieselbe Klasse mit einer Oberkette statt eines Präfixes ist das Secret: eine Zugangsdatenregel trifft den Schlüsselnamen samt dem Secret-Pseudonym dahinter, der Treffer gleicht keinem Pseudonym, und die Zeile wird als ganze zum opaken Token. Vor dem zweiten Durchlauf trat das nur auf, wenn ein Gespräch ein Pseudonym zitierte; seit `fcbc259` enthält jeder zweite Durchlauf die Ausgabe des ersten, und der Fehler kam mit jeder Anfrage.
+
+Reproduktion: `TestPseudonymizeRequest_SecondPassIsQuietOverASuffixedPseudonym` baut das Pseudonym mit Anhang aus der im Text genannten Markierungsreihe und verlangt, dass der zweite Hook und die nächste Anfrage über der Ausgabe still bleiben; `TestComposite_InertSpansShieldOverlaps` in `detect` hält Präfix und Oberkette mit falschen Schichten fest und zeigt, dass ohne die Kur beide durchgehen; `TestTable_PseudonymSpans` in `mapping` die Spannen selbst. Im Log des Servers vor der Kur: die Zeilen `pseudonymized after auth` mit `distinct` und den Byte-Zahlen.
+
+Gewicht: kein Leck. Das Modell sah ein Pseudonym mit doppeltem Anhang und ein zweites opakes Token über der ganzen Zeile, das ihm den Schlüsselnamen verdeckte; auf dem Rückweg stellt der Restaurierer die längste Form her, und der Rest des Anhangs bleibt beim Nutzer stehen. Sichtbar wurde es als `#<attempt>#<attempt>` in jeder Notiz, die die Reihe nennt.
+
+Kur: die Vorkommen der Pseudonyme der Tabelle im Text sind Sperrzonen. `Table.PseudonymSpans` findet sie mit der Regel des Rückwegs, und der Composite schließt jeden Kandidaten aus, der eine solche Spanne überlappt, als Präfix, als Oberkette oder gleich; ein ausgeschlossener Kandidat schirmt seine Spanne wie bisher gegen spätere Schichten ab. `Knows` bleibt daneben bestehen und urteilt über den Wert, die Spannen über den Ort.
+
+Verworfen: Felder oder Formen aufzählen, die der zweite Durchlauf übergeht, weil die Klasse offen ist. Nicht entschieden: die Markierungsreihe selbst von der Musterebene auszunehmen, was den Anhang vermiede, aber nur diesen einen Fall träfe; ob eine Reihe, die kein Gerät bezeichnet, überhaupt ersetzt werden soll, ist eine Frage an den Nutzer.
+
+Behoben mit `d8fa7b5`.
+
+---
+
 # Beobachtungen ohne Fehlerstatus
 
 `Walk` verwarf alles, was nach der schließenden Klammer stand, sobald eine Ersetzung stattfand: aus `{"a":"zeus.lan"}trailing` wurde `{"a":"h-0123456789ab"}`, und aus zwei aufeinanderfolgenden Objekten blieb das erste. Der Produktionsweg war davon nicht betroffen, weil `ReplaceStrings` denselben Body mit `body is not a JSON object` ablehnt und auf dem Hinweg `on_error: block` gilt. Seit `4947e0d` teilen sich beide Funktionen den Scanner, und `Walk` lehnt solche Bytes genauso ab; `TestWalk_TrailingBytesAfterObject` hält das fest.
