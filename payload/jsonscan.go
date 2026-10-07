@@ -396,6 +396,25 @@ func scanStrings(body []byte, deny *DenyList, visit func(path Path, start, end i
 // re-encoded like a value; two members whose keys fall onto the same
 // replacement stay two members, as a duplicate key does.
 func rewrite(body []byte, deny *DenyList, fn func(Path, string) (string, bool)) (out []byte, replaced int, err error) {
+	edits, err := collectEdits(body, deny, fn)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(edits) == 0 {
+		return body, 0, nil
+	}
+	out, err = splice(body, edits)
+	if err != nil {
+		return nil, 0, err
+	}
+	return out, len(edits), nil
+}
+
+// collectEdits is the scanning half of rewrite: it decodes every string
+// scanStrings reports and returns an edit, in document order, for each one
+// fn replaces. ReplaceData splices them into the raw event instead of the
+// body they were found in.
+func collectEdits(body []byte, deny *DenyList, fn func(Path, string) (string, bool)) ([]stringEdit, error) {
 	var edits []stringEdit
 	errScan := scanStrings(body, deny, func(path Path, start, end int) error {
 		value, errDec := decodeString(body[start:end])
@@ -410,16 +429,9 @@ func rewrite(body []byte, deny *DenyList, fn func(Path, string) (string, bool)) 
 		return nil
 	})
 	if errScan != nil {
-		return nil, 0, errScan
+		return nil, errScan
 	}
-	if len(edits) == 0 {
-		return body, 0, nil
-	}
-	out, err = splice(body, edits)
-	if err != nil {
-		return nil, 0, err
-	}
-	return out, len(edits), nil
+	return edits, nil
 }
 
 // stringEdit is one replacement of an encoded string value in a body.

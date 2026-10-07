@@ -5,6 +5,7 @@ package main
 // held remainder stay behind, and is text lost or doubled by it.
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/rheodev/cpa-plugin-privacyfilter/payload"
@@ -63,31 +64,36 @@ func TestStream_EndWithoutStopEventLosesHeldText(t *testing.T) {
 	}
 }
 
-// An error event passes through as it came. Its message is not one of the
-// four fields the stream restores, so a pseudonym in it stays a pseudonym,
-// while the non-streaming return path would swap it back.
-func TestStream_ErrorEventKeepsItsPseudonyms(t *testing.T) {
+// An error event arrives whole and is restored as a whole: its message may
+// quote the request, and the stream says the same about it as the
+// non-streaming return path would, which walks the same data with the same
+// deny list. The error's own type stays, the list covers it.
+func TestStream_ErrorEventRestoresItsMessage(t *testing.T) {
 	tab, ps := fixture(t)
 	st := newState(tab)
 
 	ev := evError("invalid_request_error", "messages.0.content.0.text: "+ps[0]+" ist unbekannt")
 	out := st.deliver(ev)
-	if string(out) != string(ev) {
-		t.Errorf("error event was rewritten:\n got %q\nwant %q", out, ev)
+	if string(out) == string(ev) {
+		t.Fatalf("error event passed through with its pseudonym:\n%s", out)
 	}
 
 	evs, err := payload.ParseEvents(ev)
 	if err != nil || len(evs) != 1 {
 		t.Fatalf("ParseEvents: %v (%d events)", err, len(evs))
 	}
-	_, n, err := payload.ReplaceStrings(evs[0].Data, payload.DefaultDeny(), func(_ payload.Path, v string) (string, bool) {
+	data, n, err := payload.ReplaceStrings(evs[0].Data, payload.DefaultDeny(), func(_ payload.Path, v string) (string, bool) {
 		return st.restorer.Restore(v, false)
 	})
-	if err != nil {
-		t.Fatalf("ReplaceStrings: %v", err)
+	if err != nil || n != 1 {
+		t.Fatalf("ReplaceStrings: %d, %v", n, err)
 	}
-	if n > 0 {
-		t.Logf("the non-streaming path would restore %d string(s) of this error event; the stream restores none", n)
+	want := "event: error\ndata: " + string(data) + "\n\n"
+	if string(out) != want {
+		t.Errorf("the stream and the non-streaming path disagree about the error event:\n got %q\nwant %q", out, want)
+	}
+	if !strings.Contains(string(out), `"type":"invalid_request_error"`) {
+		t.Errorf("the error type was touched: %s", out)
 	}
 }
 

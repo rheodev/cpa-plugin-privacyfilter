@@ -53,6 +53,9 @@ type streamState struct {
 	// missing is set when no table exists for the request, so the miss is
 	// logged once and every further chunk passes through quietly.
 	missing bool
+	// deny is the list the whole events are walked with, the same as on
+	// the forward path and the whole-response path; nil means the default.
+	deny *payload.DenyList
 }
 
 // streams holds the streamState of every open stream by RequestID. Like the
@@ -214,7 +217,7 @@ func (p *privacyFilterPlugin) newStreamState(requestID string) *streamState {
 		log.Warnf("privacyfilter: no mapping table for the stream, passing it through with pseudonyms")
 		return &streamState{missing: true}
 	}
-	return &streamState{restorer: table.Restorer(), holds: make(map[int]*blockHold), unknown: map[string]int{}}
+	return &streamState{restorer: table.Restorer(), holds: make(map[int]*blockHold), unknown: map[string]int{}, deny: p.deny}
 }
 
 // chunk restores the events of one chunk. It returns the new chunk body,
@@ -307,13 +310,29 @@ type streamSnapshot struct {
 // the event vanishes into the holdback. Stop events are preceded by the
 // flushed holdback of their block, and so is an error event: it ends the
 // stream, the host makes no further call, and text that still waited for
-// its next fragment would otherwise never reach the client.
+// its next fragment would otherwise never reach the client. The two
+// fragment deltas go through the holdback; every other event arrives whole
+// and is restored as a whole, see whole.
 func (st *streamState) event(ev payload.Event) (raw []byte, keep bool, err error) {
 	switch ev.Type {
 	case payload.EventContentBlockStop:
 		return st.flushBefore(ev.Raw, ev.Index), true, nil
-	case payload.EventMessageStop, payload.EventError:
+	case payload.EventMessageStop:
 		return st.flushBefore(ev.Raw, -1), true, nil
+	case payload.EventError:
+		// The message of an error may quote the request. It is restored
+		// like any whole event, and the holdback goes out in front of it
+		// either way.
+		out, errWhole := st.whole(ev)
+		if errWhole != nil {
+			log.Warnf("privacyfilter: error event passed through: %v", errWhole)
+			out = ev.Raw
+		}
+		return st.flushBefore(out, -1), true, nil
+	}
+	if !payload.Streamed(ev) {
+		out, errWhole := st.whole(ev)
+		return out, true, errWhole
 	}
 
 	field, ok := payload.ReplaceableText(ev)
@@ -323,17 +342,6 @@ func (st *streamState) event(ev payload.Event) (raw []byte, keep bool, err error
 	text, errGet := payload.GetText(ev, field)
 	if errGet != nil {
 		return nil, false, errGet
-	}
-
-	if !payload.Streamed(ev) {
-		restored, changed := st.restorer.Restore(text, field.Escaped)
-		st.count(restored)
-		if !changed {
-			return ev.Raw, true, nil
-		}
-		st.restored++
-		out, errSet := payload.SetText(ev, field, restored)
-		return out, true, errSet
 	}
 
 	hold := st.holds[ev.Index]
@@ -361,6 +369,32 @@ func (st *streamState) event(ev payload.Event) (raw []byte, keep bool, err error
 	}
 	out, errSet := payload.SetText(ev, field, restored)
 	return out, true, errSet
+}
+
+// whole restores an event that arrives complete: every string of its data
+// the deny list allows, the way the whole-response path does, and nothing
+// is held back, because nothing of it continues in a later event. That
+// covers the start of every block with whatever it already carries, a
+// citation with its cited text and document title, the message deltas and
+// the message of an error; the deny list keeps thinking blocks and
+// signatures out, as on every other path. An event without data, an SSE
+// comment, passes as it came. It returns Raw itself when nothing changed.
+func (st *streamState) whole(ev payload.Event) ([]byte, error) {
+	if len(ev.Data) == 0 {
+		return ev.Raw, nil
+	}
+	out, replaced, err := payload.ReplaceData(ev, st.deny, func(_ payload.Path, text string) (string, bool) {
+		restored, changed := st.restorer.Restore(text, false)
+		st.count(restored)
+		return restored, changed
+	})
+	if err != nil {
+		return nil, err
+	}
+	if replaced > 0 {
+		st.restored++
+	}
+	return out, nil
 }
 
 // flushBefore returns the holdback of block index, or of every block when

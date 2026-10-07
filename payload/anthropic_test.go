@@ -137,3 +137,82 @@ func TestSyntheticDelta(t *testing.T) {
 		t.Fatalf("synthetic input_json_delta = %+v ok=%v", f2, ok)
 	}
 }
+
+// TestParseEvent_SeveralDataLines: SSE joins several data lines with a
+// newline, so an offset into Data is not one into Raw. SetText and
+// ReplaceData find the line of every edit, and the lines stay lines, with
+// their line endings and with or without the optional space.
+func TestParseEvent_SeveralDataLines(t *testing.T) {
+	raw := []byte("event: content_block_delta\r\ndata: {\"type\":\"content_block_delta\",\"index\":0,\r\ndata:\"delta\":{\"type\":\"text_delta\",\"text\":\"ping h-1\"}}\r\n\r\n")
+	ev, err := payload.ParseEvent(raw)
+	if err != nil {
+		t.Fatalf("ParseEvent: %v", err)
+	}
+	if ev.Type != payload.EventContentBlockDelta || ev.DeltaType != payload.DeltaText || ev.Index != 0 {
+		t.Fatalf("event = %s/%s index %d", ev.Type, ev.DeltaType, ev.Index)
+	}
+	if !bytes.Equal(ev.Raw, raw) {
+		t.Fatalf("Raw changed:\n%s", ev.Raw)
+	}
+	field, ok := payload.ReplaceableText(ev)
+	if !ok {
+		t.Fatal("no replaceable text")
+	}
+	if got, err := payload.GetText(ev, field); err != nil || got != "ping h-1" {
+		t.Fatalf("GetText = %q, %v", got, err)
+	}
+	want := bytes.Replace(raw, []byte("ping h-1"), []byte("ping athene.lan"), 1)
+	out, err := payload.SetText(ev, field, "ping athene.lan")
+	if err != nil || !bytes.Equal(out, want) {
+		t.Fatalf("SetText over two data lines = %v\n%s\nwant\n%s", err, out, want)
+	}
+	out, n, err := payload.ReplaceData(ev, nil, func(_ payload.Path, s string) (string, bool) {
+		if s == "ping h-1" {
+			return "ping athene.lan", true
+		}
+		return s, false
+	})
+	if err != nil || n != 1 || !bytes.Equal(out, want) {
+		t.Fatalf("ReplaceData over two data lines = %d, %v\n%s\nwant\n%s", n, err, out, want)
+	}
+	if again, err := payload.ParseEvent(out); err != nil || !bytes.Equal(again.Raw, out) {
+		t.Fatalf("the edited event does not parse: %v", err)
+	}
+}
+
+// TestReplaceData: every string of a whole event that the deny list allows
+// is visited and the edits land in Raw, the event line untouched; a thinking
+// block is kept out by the list, and an event without a change comes back
+// as Raw itself.
+func TestReplaceData(t *testing.T) {
+	restore := func(_ payload.Path, s string) (string, bool) {
+		r := bytes.ReplaceAll([]byte(s), []byte("h-1"), []byte("athene.lan"))
+		return string(r), !bytes.Equal(r, []byte(s))
+	}
+	raw := []byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"citations_delta\",\"citation\":{\"type\":\"char_location\",\"cited_text\":\"ping h-1\",\"document_title\":\"Notizen h-1\"}}}\n\n")
+	ev, err := payload.ParseEvent(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, n, err := payload.ReplaceData(ev, nil, restore)
+	if err != nil || n != 2 {
+		t.Fatalf("ReplaceData = %d, %v", n, err)
+	}
+	want := bytes.ReplaceAll(raw, []byte("h-1"), []byte("athene.lan"))
+	if !bytes.Equal(out, want) {
+		t.Fatalf("ReplaceData =\n%s\nwant\n%s", out, want)
+	}
+
+	thinking := []byte("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"ping h-1\",\"signature\":\"h-1\"}}\n\n")
+	ev, err = payload.ParseEvent(thinking)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, n, err = payload.ReplaceData(ev, nil, restore)
+	if err != nil || n != 0 || !bytes.Equal(out, thinking) {
+		t.Fatalf("a thinking block was touched: %d, %v\n%s", n, err, out)
+	}
+	if &out[0] != &thinking[0] {
+		t.Fatal("an unchanged event is not returned as Raw itself")
+	}
+}

@@ -11,6 +11,10 @@ import (
 // carries no data line. The caller passes such a chunk through untouched.
 var errNoDataLine = errors.New("payload: sse chunk has no data line")
 
+// errEditAcrossLines: a string edit on the joined data does not fall into
+// one data line, which no JSON string can do; the event is left alone.
+var errEditAcrossLines = errors.New("payload: sse string edit spans data lines")
+
 // FormatClaude is the SourceFormat the host reports for Claude Code traffic.
 // It is the only format the return pass handles until other clients appear.
 const FormatClaude = "claude"
@@ -60,6 +64,16 @@ type Event struct {
 	// Raw is the complete event as received, including the event: line,
 	// the data: line and the terminating blank line, for pass-through.
 	Raw []byte
+	// segments maps the data lines into Raw: SSE joins several data lines
+	// with a newline, so an offset into Data is not one into Raw. See
+	// rawEdits.
+	segments []dataSegment
+}
+
+// dataSegment is one data line of an event: where its field begins in Raw
+// and in Data, and how long it is.
+type dataSegment struct {
+	raw, data, n int
 }
 
 // ParseEvent parses one SSE event. The host delivers whole events, never a
@@ -72,22 +86,36 @@ func ParseEvent(chunk []byte) (Event, error) {
 
 	var eventLine string
 	var data []byte
-	for _, line := range bytes.Split(chunk, []byte("\n")) {
-		line = bytes.TrimSuffix(line, []byte("\r"))
+	var segments []dataSegment
+	for pos := 0; pos < len(chunk); {
+		next := len(chunk)
+		if i := bytes.IndexByte(chunk[pos:], '\n'); i >= 0 {
+			next = pos + i + 1
+		}
+		line := bytes.TrimSuffix(bytes.TrimSuffix(chunk[pos:next], []byte("\n")), []byte("\r"))
 		switch {
 		case bytes.HasPrefix(line, []byte("event:")):
 			eventLine = string(bytes.TrimSpace(line[len("event:"):]))
 		case bytes.HasPrefix(line, []byte("data:")):
 			// SSE strips one optional space after the colon and joins
-			// several data lines with a newline. This host sends one.
-			field := line[len("data:"):]
-			field = bytes.TrimPrefix(field, []byte(" "))
-			if data == nil {
-				data = field
-			} else {
-				data = append(append(data, '\n'), field...)
+			// several data lines with a newline. This host sends one,
+			// but every line is noted with its place in the chunk, so
+			// an edit on the joined data finds its line again. data is
+			// a copy, never a view into chunk: appending to a view would
+			// write into Raw.
+			skip := len("data:")
+			field := line[skip:]
+			if bytes.HasPrefix(field, []byte(" ")) {
+				field = field[1:]
+				skip++
 			}
+			if data != nil {
+				data = append(data, '\n')
+			}
+			segments = append(segments, dataSegment{raw: pos + skip, data: len(data), n: len(field)})
+			data = append(data, field...)
 		}
+		pos = next
 	}
 	if data == nil {
 		return Event{Index: -1, Raw: chunk}, errNoDataLine
@@ -96,6 +124,7 @@ func ParseEvent(chunk []byte) (Event, error) {
 		return Event{Index: -1, Raw: chunk}, ErrNotJSON
 	}
 	ev.Data = data
+	ev.segments = segments
 
 	var head struct {
 		Type  string `json:"type"`
@@ -246,11 +275,83 @@ func SetText(ev Event, field TextField, text string) ([]byte, error) {
 	if ev.Data[start] != '"' {
 		return nil, errNotString
 	}
-	offset := bytes.Index(ev.Raw, ev.Data)
-	if offset < 0 {
-		return nil, errNoDataLine
+	edits, err := ev.rawEdits([]stringEdit{{start: start, end: end, enc: encodeString(text)}})
+	if err != nil {
+		return nil, err
 	}
-	return splice(ev.Raw, []stringEdit{{start: offset + start, end: offset + end, enc: encodeString(text)}})
+	return splice(ev.Raw, edits)
+}
+
+// ReplaceData is ReplaceStrings for a stream event that arrives whole: it
+// visits every string of the event's data that deny allows and splices the
+// replacements into Raw, so the event: line, the data lines and every other
+// byte survive as they came. deny nil means DefaultDeny. It returns Raw
+// itself and 0 when nothing changed.
+func ReplaceData(ev Event, deny *DenyList, fn func(Path, string) (string, bool)) (out []byte, replaced int, err error) {
+	if len(ev.Data) == 0 {
+		return nil, 0, errNoDataLine
+	}
+	if !json.Valid(ev.Data) {
+		return nil, 0, ErrNotJSON
+	}
+	if deny == nil {
+		deny = DefaultDeny()
+	}
+	edits, err := collectEdits(ev.Data, deny, fn)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(edits) == 0 {
+		return ev.Raw, 0, nil
+	}
+	if edits, err = ev.rawEdits(edits); err != nil {
+		return nil, 0, err
+	}
+	if out, err = splice(ev.Raw, edits); err != nil {
+		return nil, 0, err
+	}
+	return out, len(edits), nil
+}
+
+// rawEdits maps edits on Data to edits on Raw, line by line. A JSON string
+// cannot hold a raw newline, so a string value lies within one data line;
+// an edit that does not is an error. An event built without data lines,
+// Data and Raw set by hand, is handled when Data is a contiguous part of
+// Raw.
+func (ev Event) rawEdits(edits []stringEdit) ([]stringEdit, error) {
+	if len(ev.segments) == 0 {
+		offset := bytes.Index(ev.Raw, ev.Data)
+		if offset < 0 {
+			return nil, errNoDataLine
+		}
+		for i := range edits {
+			edits[i].start += offset
+			edits[i].end += offset
+		}
+		return edits, nil
+	}
+	for i, e := range edits {
+		start, lineStart, okStart := ev.rawOffset(e.start)
+		end, lineEnd, okEnd := ev.rawOffset(e.end)
+		if !okStart || !okEnd || lineStart != lineEnd {
+			return nil, errEditAcrossLines
+		}
+		edits[i].start, edits[i].end = start, end
+	}
+	return edits, nil
+}
+
+// rawOffset maps an offset into Data to the offset of the same byte in Raw
+// and names the data line it falls into; ok is false when it falls into no
+// line. The end of a line belongs to that line, so the end of a value on
+// its last byte maps as well.
+func (ev Event) rawOffset(off int) (raw, line int, ok bool) {
+	for i, s := range ev.segments {
+		if off >= s.data && off <= s.data+s.n {
+			return s.raw + (off - s.data), i, true
+		}
+	}
+	return 0, 0, false
 }
 
 // SyntheticDelta builds a complete SSE event of type content_block_delta
