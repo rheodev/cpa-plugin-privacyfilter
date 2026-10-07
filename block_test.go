@@ -35,13 +35,20 @@ func assertBlocked(t *testing.T, plugin pluginapi.Plugin, err error, want ...str
 	if plugin.Capabilities.ResponseInterceptor != nil || plugin.Capabilities.StreamChunkInterceptor != nil || plugin.Capabilities.RequestLifecyclePlugin != nil {
 		t.Error("a blocked plugin announces more than the request interceptor")
 	}
-	resp, errReq := plugin.Capabilities.RequestInterceptor.InterceptRequestBeforeAuth(context.Background(), pluginapi.RequestInterceptRequest{
+	req := pluginapi.RequestInterceptRequest{
 		RequestID:    "req-blocked",
 		SourceFormat: "claude",
 		Model:        "claude-fable-5-1",
 		Headers:      http.Header{},
 		Body:         []byte(`{"model":"claude-fable-5-1","messages":[{"role":"user","content":"hello"}]}`),
-	})
+	}
+	// Both request hooks block: the plugin may have entered the state
+	// between the two by a reload.
+	after, errAfter := plugin.Capabilities.RequestInterceptor.InterceptRequestAfterAuth(context.Background(), req)
+	if errAfter != nil || !after.Terminate || after.StatusCode != http.StatusBadRequest {
+		t.Fatalf("blocked request after auth: err=%v terminate=%v status=%d, want a terminated 400", errAfter, after.Terminate, after.StatusCode)
+	}
+	resp, errReq := plugin.Capabilities.RequestInterceptor.InterceptRequestBeforeAuth(context.Background(), req)
 	if errReq != nil {
 		t.Fatalf("a blocked request returned an error instead of a terminated response: %v", errReq)
 	}

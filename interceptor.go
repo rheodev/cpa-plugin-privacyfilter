@@ -125,8 +125,11 @@ func (p *privacyFilterPlugin) blockedResponse() pluginapi.RequestInterceptRespon
 // second mapping table under the same RequestID and count every replacement
 // twice.
 func (p *privacyFilterPlugin) InterceptRequestAfterAuth(ctx context.Context, req pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
+	if p.blocked != nil {
+		return p.blockedResponse(), nil
+	}
 	if p.cfg.IsPseudonymize() {
-		return pluginapi.RequestInterceptResponse{}, nil
+		return p.pseudonymizeAgain(req), nil
 	}
 	return p.interceptRequest(ctx, req)
 }
@@ -405,31 +408,113 @@ func (p *privacyFilterPlugin) pseudonymizeRequest(req pluginapi.RequestIntercept
 	return resp
 }
 
-// runForward performs detection and replacement. It never returns an error
-// that carries request content, and it turns a panic in a detection layer into
-// an ordinary error so on_error decides what happens instead of the host
-// crashing.
+// pseudonymizeAgain is the forward pass in the hook after authentication.
+// The body it sees is the first pass's output plus whatever the host or a
+// plugin between the two hooks added, so it is walked once more, over the
+// table the first pass bound to the request: that table excludes its own
+// pseudonyms, so the text already rewritten stays byte for byte, and a value
+// that came in between gets the pseudonym the first pass would have given
+// it, same salt, same rows, and the return path finds it in the same table.
+// A request the store does not know, an empty RequestID or a table that was
+// dropped in between, gets the full pass, which identifies the conversation
+// again and binds the request.
+func (p *privacyFilterPlugin) pseudonymizeAgain(req pluginapi.RequestInterceptRequest) pluginapi.RequestInterceptResponse {
+	resp := pluginapi.RequestInterceptResponse{}
+
+	if p.cfg.shouldSkip(req.Model, req.RequestedModel, req.SourceFormat) {
+		return resp
+	}
+	body := req.Body
+	if len(body) == 0 {
+		return resp
+	}
+	table, errGet := p.store.Get(req.RequestID)
+	if errGet != nil {
+		return p.pseudonymizeRequest(req)
+	}
+
+	res, err := p.runForwardBound(table, body)
+	if err != nil {
+		// The table has the rows and the binding of the first pass; there
+		// is nothing of this pass to drop.
+		return p.forwardFailure(err)
+	}
+	if !res.changed {
+		return resp
+	}
+	resp.Body = res.out
+	p.audit.request(req.RequestID, res, req.SourceFormat, len(body))
+
+	log.WithFields(log.Fields{
+		"source_format":  req.SourceFormat,
+		"session_source": string(res.session.Source),
+		"replacements":   formatCounts(res.counts),
+		"kept":           formatCounts(res.kept),
+		"distinct":       len(res.added),
+		"body_bytes":     len(body),
+		"out_bytes":      len(res.out),
+	}).Info("privacyfilter: request pseudonymized after auth")
+
+	return resp
+}
+
+// runForward is the forward pass of a request the store does not know yet:
+// it identifies the conversation, opens its table and runs the detection and
+// replacement over it. It never returns an error that carries request
+// content, and it turns a panic in a detection layer into an ordinary error
+// so on_error decides what happens instead of the host crashing.
 func (p *privacyFilterPlugin) runForward(headers http.Header, metadata map[string]any, body []byte) (res forwardResult, err error) {
 	defer recoverInto(&err, errForwardPanic)
 
 	// The conversation identifier comes from the client, the caller scope
 	// from the host; salt and table are keyed by both, so an identifier
 	// another caller sends reaches a table of its own, see pseudo.Session.Key.
-	res.session = pseudo.IdentifySession(headers, body)
-	res.session.Caller = pseudo.CallerScope(metadata)
-	key := res.session.Key()
-	gen := pseudo.NewGenerator(p.secret, pseudo.DeriveSalt(p.secret, key), p.renderers).WithNetworks(p.networks)
-	if gen == nil {
-		return res, errors.New("privacyfilter: pseudonym generator unavailable")
+	session := pseudo.IdentifySession(headers, body)
+	session.Caller = pseudo.CallerScope(metadata)
+	key := session.Key()
+	gen, err := p.generator(key)
+	if err != nil {
+		return res, err
 	}
-
 	// The table belongs to the conversation and outlives the request: the
 	// values of earlier turns are already in it, and the values of this one
-	// are added. The exclude is the table itself, not the shape of a
-	// pseudonym, so a value the plugin produced is left alone and a real
-	// value that merely looks like one, a node address out of the
-	// carrier-grade NAT range, is replaced.
-	table := p.store.Open(key, gen)
+	// are added.
+	return p.forward(session, key, p.store.Open(key, gen), gen, body)
+}
+
+// runForwardBound is the forward pass over a table an earlier pass of the
+// same request bound: the second hook of a request, see pseudonymizeAgain.
+// The key is the one the table was opened under, so salt and memory are
+// the first pass's; the identifier is not read again, and the result names
+// the table as the source of the session.
+func (p *privacyFilterPlugin) runForwardBound(table *mapping.Table, body []byte) (res forwardResult, err error) {
+	defer recoverInto(&err, errForwardPanic)
+
+	key := table.Session()
+	gen, err := p.generator(key)
+	if err != nil {
+		return res, err
+	}
+	return p.forward(pseudo.Session{Source: pseudo.SourceBound}, key, table, gen, body)
+}
+
+// generator builds the pseudonym generator of the conversation key, the
+// salt derived from the secret and the key.
+func (p *privacyFilterPlugin) generator(key string) (*pseudo.Generator, error) {
+	gen := pseudo.NewGenerator(p.secret, pseudo.DeriveSalt(p.secret, key), p.renderers).WithNetworks(p.networks)
+	if gen == nil {
+		return nil, errors.New("privacyfilter: pseudonym generator unavailable")
+	}
+	return gen, nil
+}
+
+// forward performs detection and replacement over body with the table of
+// the conversation key. The exclude is the table itself, not the shape of
+// a pseudonym, so a value the plugin produced is left alone and a real
+// value that merely looks like one, a node address out of the
+// carrier-grade NAT range, is replaced.
+func (p *privacyFilterPlugin) forward(session pseudo.Session, key string, table *mapping.Table, gen *pseudo.Generator, body []byte) (res forwardResult, err error) {
+	res.session = session
 	table.SetAvoid(p.isTermLiteral)
 	det := detect.NewComposite(table.Knows, p.layers...)
 	counts := make(map[detect.Kind]int)

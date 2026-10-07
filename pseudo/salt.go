@@ -25,6 +25,10 @@ const (
 	SourceMetadata SessionSource = "metadata"
 	// SourceHead: neither was present; the identifier is HeadHash(body).
 	SourceHead SessionSource = "head"
+	// SourceBound: the pass worked on the table an earlier pass of the
+	// same request had bound, under the key that table was opened with,
+	// and did not read the identifier again. The second request hook.
+	SourceBound SessionSource = "bound"
 )
 
 // sessionSuffix is the pattern the host uses on metadata.user_id.

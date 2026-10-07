@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -74,6 +75,52 @@ func TestAudit_RecordsTableAndRestores(t *testing.T) {
 		if strings.Count(text, line) != 1 {
 			t.Errorf("row %q appears %d times", line, strings.Count(text, line))
 		}
+	}
+}
+
+// TestAudit_RecordsTheSecondPass: the pass in the hook after authentication
+// writes a block of its own, headed by a request line with session=bound,
+// with the rows it added and none of the first pass's; a second pass that
+// adds nothing writes nothing.
+func TestAudit_RecordsTheSecondPass(t *testing.T) {
+	const injected = "10.77.0.80"
+	p := newPseudoPlugin(t, map[string]any{"audit": map[string]any{"path": "audit.log"}})
+	body, _ := fixtureBody(t, fixtures.SessionA)
+	first := beforeAuth(t, p, "req-audit", body)
+	table := p.tableOf(t, "req-audit")
+
+	quiet := afterAuth(t, p, "req-audit", first.Body)
+	if quiet.Body != nil {
+		t.Fatalf("the second pass over the first pass's output changed it: %s", quiet.Body)
+	}
+	between := bytes.Replace(first.Body, []byte(`"max_tokens":4096`), []byte(`"max_tokens":4096,"memory":"reach `+injected+`"`), 1)
+	if bytes.Equal(between, first.Body) {
+		t.Fatal("the fixture lost the field the test splices after")
+	}
+	after := afterAuth(t, p, "req-audit", between)
+	if after.Body == nil || !table.Has(detect.KindIPv4, injected) {
+		t.Fatalf("the second pass did not replace the injected address: %s", after.Body)
+	}
+	address := table.Lookup(detect.KindIPv4, injected)
+
+	raw, err := os.ReadFile(p.audit.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	for line, want := range map[string]int{
+		"\trequest\treq-audit\tformat=claude\tsession=metadata\t":     1,
+		"\trequest\treq-audit\tformat=claude\tsession=bound\t":        1,
+		"\tmap\treq-audit\tipv4\t" + injected + "\t" + address + "\n": 1,
+		"\tmap\treq-audit\thost\tathene.lan\t":                        1,
+	} {
+		if got := strings.Count(text, line); got != want {
+			t.Errorf("audit log carries %q %d times, want %d\n%s", line, got, want, text)
+		}
+	}
+	bound := strings.Index(text, "session=bound")
+	if bound < 0 || !strings.Contains(text[bound:], "\tmap\treq-audit\tipv4\t"+injected+"\t") {
+		t.Errorf("the row of the second pass is not in the second pass's block\n%s", text)
 	}
 }
 

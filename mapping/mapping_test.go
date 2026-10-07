@@ -310,6 +310,24 @@ func TestStore_SetTTL(t *testing.T) {
 	}
 }
 
+// TestTable_SessionIsTheStoreKey: a table knows the key the store filed it
+// under, so a later pass over the same table can derive its generator from
+// it; a table built outside a store has none until it is bound.
+func TestTable_SessionIsTheStoreKey(t *testing.T) {
+	s := mapping.NewStore(mapping.StoreConfig{})
+	if got := s.Open("caller\x00conv-1", fakeGen{}).Session(); got != "caller\x00conv-1" {
+		t.Fatalf("Session() = %q, want the key Open was given", got)
+	}
+	loose := mapping.NewTable(fakeGen{})
+	if loose.Session() != "" {
+		t.Fatalf("a table outside a store reports session %q", loose.Session())
+	}
+	s.Bind("req-1", loose)
+	if loose.Session() != "req-1" {
+		t.Fatalf("Session() = %q after Bind, want the request it was filed under", loose.Session())
+	}
+}
+
 func TestRestorer_Holdback(t *testing.T) {
 	tb := mapping.NewTable(fakeGen{})
 	p := tb.Lookup(detect.KindHost, "athene.lan") // "host:athene.lan:0"

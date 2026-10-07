@@ -250,25 +250,141 @@ func TestPseudonymizeRequest_StoresTable(t *testing.T) {
 	}
 }
 
-// TestPseudonymizeRequest_AfterAuthEmpty: the body is walked once, in the
-// hook before authentication.
-func TestPseudonymizeRequest_AfterAuthEmpty(t *testing.T) {
-	p := newPseudoPlugin(t, nil)
-	body, _ := fixtureBody(t, fixtures.SessionA)
-
+// afterAuth sends body through the hook after authentication, as the host
+// does with the first hook's output once the credentials are checked.
+func afterAuth(t *testing.T, p *privacyFilterPlugin, requestID string, body []byte) pluginapi.RequestInterceptResponse {
+	t.Helper()
 	resp, err := p.InterceptRequestAfterAuth(context.Background(), pluginapi.RequestInterceptRequest{
-		RequestID:    "req-1",
+		RequestID:    requestID,
 		SourceFormat: "claude",
+		Model:        "claude-fable-5-1",
+		Headers:      http.Header{},
 		Body:         body,
 	})
 	if err != nil {
 		t.Fatalf("InterceptRequestAfterAuth: %v", err)
 	}
-	if resp.Body != nil || resp.Terminate || resp.StatusCode != 0 || resp.ResponseBody != nil {
-		t.Fatalf("expected an empty response, got %+v", resp)
+	return resp
+}
+
+// TestPseudonymizeRequest_AfterAuthIsQuietOverTheFirstPass: the second hook
+// sees the first pass's output. It walks it over the table the first pass
+// bound, and that table excludes its own pseudonyms, so nothing changes, no
+// row is added and no second table or binding appears.
+func TestPseudonymizeRequest_AfterAuthIsQuietOverTheFirstPass(t *testing.T) {
+	p := newPseudoPlugin(t, nil)
+	body, _ := fixtureBody(t, fixtures.SessionA)
+	first := beforeAuth(t, p, "req-1", body)
+	rows := p.tableOf(t, "req-1").Len()
+	if rows == 0 {
+		t.Fatal("the first pass replaced nothing")
 	}
-	if p.store.Len() != 0 {
-		t.Fatalf("AfterAuth stored %d tables, want 0", p.store.Len())
+
+	second := afterAuth(t, p, "req-1", first.Body)
+	if second.Body != nil || second.Terminate {
+		t.Fatalf("the second pass changed the body:\n%s", second.Body)
+	}
+	if got := p.tableOf(t, "req-1").Len(); got != rows {
+		t.Fatalf("the second pass grew the table from %d to %d rows", rows, got)
+	}
+	if p.store.Len() != 1 || p.store.Bound() != 1 {
+		t.Fatalf("store holds %d tables and %d bindings, want 1 and 1", p.store.Len(), p.store.Bound())
+	}
+}
+
+// TestPseudonymizeRequest_AfterAuthRewritesWhatCameInBetween: text the host
+// or another plugin adds between the two hooks is rewritten with the first
+// pass's table and salt. A value the first pass replaced gets the same
+// pseudonym again, a new one gets a row in the same table, the text of the
+// first pass stays byte for byte, the pass is idempotent over its own
+// output, and the return path restores the new row as any other.
+func TestPseudonymizeRequest_AfterAuthRewritesWhatCameInBetween(t *testing.T) {
+	const injected = "10.77.0.80"
+	p := newPseudoPlugin(t, nil)
+	body, _ := fixtureBody(t, fixtures.SessionA)
+	first := beforeAuth(t, p, "req-1", body)
+	table := p.tableOf(t, "req-1")
+	rows := table.Len()
+	if !table.Has(detect.KindHost, "athene.lan") {
+		t.Fatal("the first pass did not replace the host of the fixture")
+	}
+	host := table.Lookup(detect.KindHost, "athene.lan")
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(first.Body, &fields); err != nil {
+		t.Fatal(err)
+	}
+	fields["system"] = jsonString(t, "memory: athene.lan answers at "+injected)
+	between, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	after := afterAuth(t, p, "req-1", between)
+	if after.Body == nil || after.Terminate {
+		t.Fatalf("the second pass left the injected text alone: %+v", after)
+	}
+	out := string(after.Body)
+	for _, gone := range []string{"athene.lan", injected} {
+		if strings.Contains(out, gone) {
+			t.Errorf("%q survived the second pass, body: %s", gone, out)
+		}
+	}
+	if !strings.Contains(out, `"system":"memory: `+host+` answers at `) {
+		t.Errorf("the host did not get the first pass's pseudonym %q, body: %s", host, out)
+	}
+	if got := table.Len(); got != rows+1 {
+		t.Errorf("the second pass grew the table from %d to %d rows, want one new row", rows, got)
+	}
+	if !table.Has(detect.KindIPv4, injected) {
+		t.Fatalf("the injected address has no row in the request's table")
+	}
+	address := table.Lookup(detect.KindIPv4, injected)
+	if !strings.Contains(out, address) {
+		t.Errorf("the injected address was not replaced by its row %q, body: %s", address, out)
+	}
+	// json.Marshal re-escaped the first pass's text while splicing the
+	// system field in, so the bytes to compare with are those of between.
+	var betweenFields, afterFields map[string]json.RawMessage
+	if err := json.Unmarshal(between, &betweenFields); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(after.Body, &afterFields); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(afterFields["messages"], betweenFields["messages"]) {
+		t.Errorf("the second pass touched the messages of the first pass:\n%s\n%s", afterFields["messages"], betweenFields["messages"])
+	}
+	if p.store.Len() != 1 || p.store.Bound() != 1 {
+		t.Fatalf("store holds %d tables and %d bindings, want 1 and 1", p.store.Len(), p.store.Bound())
+	}
+
+	if again := afterAuth(t, p, "req-1", after.Body); again.Body != nil {
+		t.Fatalf("the second pass is not idempotent over its own output:\n%s", again.Body)
+	}
+
+	response := []byte(`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ping ` + address + `"}],"model":"claude-fable-5-1"}`)
+	restored := interceptResponse(t, p, "req-1", "claude", response)
+	if !bytes.Contains(restored.Body, []byte("ping "+injected)) {
+		t.Fatalf("the return path did not restore the row the second pass added: %s", restored.Body)
+	}
+}
+
+// TestPseudonymizeRequest_AfterAuthWithoutBindingRunsTheFullPass: a request
+// the store does not know, no first pass, an empty RequestID or a table
+// dropped in between, is identified and rewritten as in the first hook, with
+// the same result, and bound for the return path.
+func TestPseudonymizeRequest_AfterAuthWithoutBindingRunsTheFullPass(t *testing.T) {
+	body, _ := fixtureBody(t, fixtures.SessionA)
+	reference := beforeAuth(t, newPseudoPlugin(t, nil), "req-1", body)
+
+	p := newPseudoPlugin(t, nil)
+	after := afterAuth(t, p, "req-1", body)
+	if after.Terminate || !bytes.Equal(after.Body, reference.Body) {
+		t.Fatalf("the full pass in the second hook differs from the first hook's:\n%s\n%s", after.Body, reference.Body)
+	}
+	if p.store.Len() != 1 || p.store.Bound() != 1 {
+		t.Fatalf("store holds %d tables and %d bindings, want 1 and 1", p.store.Len(), p.store.Bound())
 	}
 }
 

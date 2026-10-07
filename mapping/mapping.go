@@ -268,6 +268,13 @@ func (t *Table) Len() int {
 	return len(t.byKey)
 }
 
+// Session returns the key the store filed the table under, the key its
+// pseudonyms were derived for, or "" for a table built outside a store. A
+// later pass over the same table derives its generator from it.
+func (t *Table) Session() string {
+	return t.session
+}
+
 // Pseudonyms returns every pseudonym in the table, sorted by descending
 // length and then lexically. The return pass replaces in this order so a
 // pseudonym that is a prefix of another (not possible with the default
