@@ -52,11 +52,35 @@ func newAuditLog(pluginDir, path string, maxBytes int64) (*auditLog, error) {
 	if err != nil {
 		return nil, fmt.Errorf("privacyfilter: audit.path: %w", err)
 	}
+	// The 0600 above applies to a file this call creates. One that exists
+	// keeps its bits, so a file left readable by an earlier set-up or a
+	// copy would receive clear text: it is tightened to the mode the README
+	// promises. A file that cannot be tightened belongs to someone else;
+	// nothing is written to it, the audit stays off for this run and the
+	// log says so, while the filter keeps working: no value goes out over
+	// the wire because of a diagnostic file, so this is no reason to block.
+	st, errStat := f.Stat()
+	if errStat != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("privacyfilter: audit.path: %w", errStat)
+	}
+	if perm := st.Mode().Perm(); perm&0o077 != 0 {
+		if errChmod := auditChmod(f, 0o600); errChmod != nil {
+			_ = f.Close()
+			log.Errorf("privacyfilter: audit log off for this run, %s has mode %04o and could not be tightened to 0600: %v", path, perm, errChmod)
+			return nil, nil
+		}
+		log.Warnf("privacyfilter: audit log %s had mode %04o, tightened to 0600", path, perm)
+	}
 	if errClose := f.Close(); errClose != nil {
 		return nil, fmt.Errorf("privacyfilter: audit.path: %w", errClose)
 	}
 	return &auditLog{path: path, maxBytes: maxBytes}, nil
 }
+
+// auditChmod tightens the audit file; a variable so a test can make it
+// fail the way a file owned by someone else does.
+var auditChmod = (*os.File).Chmod
 
 // defaultAuditMaxBytes is the rotation threshold when audit.max_bytes is
 // absent: 10 MiB, a few thousand requests of a coding session.

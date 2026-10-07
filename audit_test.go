@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,6 +145,67 @@ func TestAudit_OffByDefaultAndBadPathFails(t *testing.T) {
 	}
 	plugin, err := buildPlugin(raw, dir, nil)
 	assertBlocked(t, plugin, err, "audit.path")
+}
+
+// TestAudit_TightensAnExistingFile: the file is created with mode 0600, but
+// one that already exists keeps its bits on open, so a readable one is
+// tightened before anything is written and its content kept. When it
+// cannot be tightened, the audit stays off for this run, nothing is written
+// to the file and the plugin filters on.
+func TestAudit_TightensAnExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	loose := func(name string) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("old\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		// Chmod is not subject to the umask, WriteFile is.
+		if err := os.Chmod(path, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	body, _ := fixtureBody(t, fixtures.SessionA)
+
+	path := loose("audit.log")
+	p := newPseudoPlugin(t, map[string]any{"audit": map[string]any{"path": path}})
+	if p.audit == nil {
+		t.Fatal("audit is off although the file could be tightened")
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o600 {
+		t.Fatalf("audit file mode = %04o after start-up, want 0600", st.Mode().Perm())
+	}
+	beforeAuth(t, p, "req-tight", body)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(raw), "old\n") || !strings.Contains(string(raw), "\trequest\treq-tight\t") {
+		t.Fatalf("the tightened file lost its content or got no block:\n%s", raw)
+	}
+
+	stuck := loose("stuck.log")
+	defer func(old func(*os.File, os.FileMode) error) { auditChmod = old }(auditChmod)
+	auditChmod = func(*os.File, os.FileMode) error { return errors.New("operation not permitted") }
+	q := newPseudoPlugin(t, map[string]any{"audit": map[string]any{"path": stuck}})
+	if q.audit != nil {
+		t.Fatal("audit is on although the file could not be tightened")
+	}
+	if resp := beforeAuth(t, q, "req-stuck", body); resp.Terminate || resp.Body == nil {
+		t.Fatalf("the plugin stopped filtering over a diagnostic file: %+v", resp)
+	}
+	st, err = os.Stat(stuck)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o644 || st.Size() != int64(len("old\n")) {
+		t.Fatalf("the file that could not be tightened was touched: mode %04o, %d bytes", st.Mode().Perm(), st.Size())
+	}
 }
 
 // TestAudit_Rotates: a file above max_bytes is moved to ".1" before the

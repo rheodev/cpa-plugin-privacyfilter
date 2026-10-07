@@ -418,7 +418,7 @@ Streamed responses are restored chunk by chunk. Because a pseudonym may be split
 
 ### Audit log
 
-`audit.path` switches on a per-request log next to the shared library (or wherever the path points). It is meant for checking what the plugin did with a request, not for permanent operation: every line is clear text, so the file holds exactly the values the plugin exists to keep off the wire. The file is created with mode `0600`, the plugin logs a warning at start-up while the option is set, and the file is rotated once to `.1` at `max_bytes`. Lines are tab-separated, one record per line:
+`audit.path` switches on a per-request log next to the shared library (or wherever the path points). It is meant for checking what the plugin did with a request, not for permanent operation: every line is clear text, so the file holds exactly the values the plugin exists to keep off the wire. The file is created with mode `0600`, the plugin logs a warning at start-up while the option is set, and the file is rotated once to `.1` at `max_bytes`. A file that already exists with wider permissions is tightened to `0600` at start-up; one that cannot be tightened, because it belongs to someone else, receives nothing: the audit stays off for that run and the log says so, while the filter keeps working. Lines are tab-separated, one record per line:
 
 ```text
 <time>  request   <request id>  format=claude  session=header  body=<bytes>  out=<bytes>  distinct=<n>  table=<n>  kept=<n>
