@@ -12,4 +12,4 @@ require (
 
 require github.com/BurntSushi/toml v1.6.0 // indirect
 
-replace privacyfilter => github.com/packyme/privacy-filter v0.0.0-20260609060647-64b8de3c2060
+replace privacyfilter => github.com/rheodev/privacy-filter v0.0.0-20261007070111-0bf6bb65c8b4

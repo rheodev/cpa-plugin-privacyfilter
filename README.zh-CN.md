@@ -207,7 +207,7 @@ rules/gitleaks.toml     内置检测规则
 依赖说明：
 
 ```text
-privacyfilter => github.com/packyme/privacy-filter
+privacyfilter => github.com/rheodev/privacy-filter
 ```
 
 ## 来源

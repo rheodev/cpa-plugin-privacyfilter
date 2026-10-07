@@ -216,7 +216,7 @@ rules/gitleaks.toml     Built-in detection rules
 Dependency note:
 
 ```text
-privacyfilter => github.com/packyme/privacy-filter
+privacyfilter => github.com/rheodev/privacy-filter
 ```
 
 ## Credits

@@ -149,6 +149,25 @@ func TestInterceptRequestBeforeAuth_Passthrough(t *testing.T) {
 	}
 }
 
+func TestRedactRequestBody_KeywordOverlappingCandidateDoesNotPanic(t *testing.T) {
+	p := newTestPlugin(t)
+	text := strings.Repeat(".", 26) + "api key" + strings.Repeat("A", 20)
+	payload, err := json.Marshal(map[string]any{
+		"model":    "gpt-4",
+		"messages": []any{map[string]any{"role": "user", "content": text}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	modified, err := p.redactRequestBody(payload)
+	if err != nil {
+		t.Fatalf("redactRequestBody() error = %v", err)
+	}
+	if modified != nil {
+		t.Fatalf("low-entropy text should be unchanged, got: %s", modified)
+	}
+}
+
 func TestRedactRequestBody_SecretDetection(t *testing.T) {
 	rulesDir := filepath.Join("..", "rules")
 	tomlPath := filepath.Join(rulesDir, "gitleaks.toml")
