@@ -27,41 +27,45 @@ func buildPlugin(configYAML []byte, pluginDir string) (pluginapi.Plugin, error) 
 	p.filter = f
 
 	return pluginapi.Plugin{
-		Metadata: pluginapi.Metadata{
-			Name:             pluginName,
-			Version:          pluginVersion,
-			Author:           "rheodev",
-			GitHubRepository: "https://github.com/rheodev/cpa-plugin-privacyfilter",
-			ConfigFields: []pluginapi.ConfigField{
-				{
-					Name:        "gitleaks_toml",
-					Type:        pluginapi.ConfigFieldTypeString,
-					Description: "Path to gitleaks.toml rules file. Empty uses built-in rules.",
-				},
-				{
-					Name:        "replacement",
-					Type:        pluginapi.ConfigFieldTypeString,
-					Description: "Global redaction label. Unset uses built-in labels; per-type labels take precedence.",
-				},
-				{
-					Name:        "replacement_labels",
-					Type:        pluginapi.ConfigFieldTypeObject,
-					Description: "Redaction labels keyed by entity type ID (email, secret, phone, id, bank_card, ip, or future types).",
-				},
-				{
-					Name:        "skip_models",
-					Type:        pluginapi.ConfigFieldTypeArray,
-					Description: "Model names to skip redaction for.",
-				},
-				{
-					Name:        "skip_formats",
-					Type:        pluginapi.ConfigFieldTypeArray,
-					Description: "Source format names to skip redaction for.",
-				},
-			},
-		},
+		Metadata: pluginMetadata(),
 		Capabilities: pluginapi.Capabilities{
 			RequestInterceptor: p,
 		},
 	}, nil
+}
+
+func pluginMetadata() pluginapi.Metadata {
+	return pluginapi.Metadata{
+		Name:             pluginName,
+		Version:          pluginVersion,
+		Author:           "rheodev",
+		GitHubRepository: "https://github.com/rheodev/cpa-plugin-privacyfilter",
+		ConfigFields: []pluginapi.ConfigField{
+			{
+				Name:        "gitleaks_toml",
+				Type:        pluginapi.ConfigFieldTypeString,
+				Description: "Path to gitleaks.toml rules file. Empty uses built-in rules.",
+			},
+			{
+				Name:        "replacement",
+				Type:        pluginapi.ConfigFieldTypeString,
+				Description: "Global redaction label. Unset uses built-in labels; per-type labels take precedence.",
+			},
+			{
+				Name:        "replacement_labels",
+				Type:        pluginapi.ConfigFieldTypeObject,
+				Description: "Redaction labels keyed by entity type ID (email, secret, phone, id, bank_card, ip, or future types).",
+			},
+			{
+				Name:        "skip_models",
+				Type:        pluginapi.ConfigFieldTypeArray,
+				Description: "Model names to skip redaction for.",
+			},
+			{
+				Name:        "skip_formats",
+				Type:        pluginapi.ConfigFieldTypeArray,
+				Description: "Source format names to skip redaction for.",
+			},
+		},
+	}
 }

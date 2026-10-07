@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -28,9 +29,9 @@ func newTestPlugin(t *testing.T) *privacyFilterPlugin {
 func TestRedactRequestBody_EmailInContent(t *testing.T) {
 	p := newTestPlugin(t)
 	body := `{"model":"gpt-4","messages":[{"role":"user","content":"my email is test@example.com"}]}`
-	modified, err := p.redactRequestBody([]byte(body))
+	modified, _, err := p.redactPayload([]byte(body))
 	if err != nil {
-		t.Fatalf("redactRequestBody() error = %v", err)
+		t.Fatalf("redactPayload() error = %v", err)
 	}
 	if modified == nil {
 		t.Fatal("expected redacted body, got nil")
@@ -46,9 +47,9 @@ func TestRedactRequestBody_EmailInContent(t *testing.T) {
 func TestRedactRequestBody_NoPII(t *testing.T) {
 	p := newTestPlugin(t)
 	body := `{"model":"gpt-4","messages":[{"role":"user","content":"hello world"}]}`
-	modified, err := p.redactRequestBody([]byte(body))
+	modified, _, err := p.redactPayload([]byte(body))
 	if err != nil {
-		t.Fatalf("redactRequestBody() error = %v", err)
+		t.Fatalf("redactPayload() error = %v", err)
 	}
 	if modified != nil {
 		t.Fatalf("expected nil for no-PII body, got: %s", string(modified))
@@ -58,9 +59,9 @@ func TestRedactRequestBody_NoPII(t *testing.T) {
 func TestRedactRequestBody_MultiPartContent(t *testing.T) {
 	p := newTestPlugin(t)
 	body := `{"model":"gpt-4","messages":[{"role":"user","content":[{"type":"text","text":"my phone is 13800138000"}]}]}`
-	modified, err := p.redactRequestBody([]byte(body))
+	modified, _, err := p.redactPayload([]byte(body))
 	if err != nil {
-		t.Fatalf("redactRequestBody() error = %v", err)
+		t.Fatalf("redactPayload() error = %v", err)
 	}
 	if modified == nil {
 		t.Fatal("expected redacted body, got nil")
@@ -73,9 +74,9 @@ func TestRedactRequestBody_MultiPartContent(t *testing.T) {
 func TestRedactRequestBody_ResponsesStringInput(t *testing.T) {
 	p := newTestPlugin(t)
 	body := `{"model":"gpt-4","input":"my email is test@example.com"}`
-	modified, err := p.redactRequestBody([]byte(body))
+	modified, _, err := p.redactPayload([]byte(body))
 	if err != nil {
-		t.Fatalf("redactRequestBody() error = %v", err)
+		t.Fatalf("redactPayload() error = %v", err)
 	}
 	if modified == nil {
 		t.Fatal("expected redacted body, got nil")
@@ -89,7 +90,7 @@ func TestInterceptRequest_SkippedModel(t *testing.T) {
 	p := newTestPlugin(t)
 	p.cfg.SkipModels = []string{"gpt-4"}
 	body := `{"model":"gpt-4","messages":[{"role":"user","content":"my email is test@example.com"}]}`
-	resp, err := p.interceptRequest(pluginapi.RequestInterceptRequest{
+	resp, err := p.interceptRequest(context.Background(), pluginapi.RequestInterceptRequest{
 		Model: "gpt-4",
 		Body:  []byte(body),
 	})
@@ -105,7 +106,7 @@ func TestInterceptRequest_SkippedRequestedModel(t *testing.T) {
 	p := newTestPlugin(t)
 	p.cfg.SkipModels = []string{"gpt-4"}
 	body := `{"model":"upstream-model","messages":[{"role":"user","content":"my email is test@example.com"}]}`
-	resp, err := p.interceptRequest(pluginapi.RequestInterceptRequest{
+	resp, err := p.interceptRequest(context.Background(), pluginapi.RequestInterceptRequest{
 		Model:          "upstream-model",
 		RequestedModel: "gpt-4",
 		Body:           []byte(body),
@@ -118,15 +119,15 @@ func TestInterceptRequest_SkippedRequestedModel(t *testing.T) {
 	}
 }
 
-func TestInterceptRequestAfterAuth_RedactsFinalRequest(t *testing.T) {
+func TestInterceptRequestBeforeAuth_RedactsRequest(t *testing.T) {
 	p := newTestPlugin(t)
 	body := `{"model":"gpt-4","messages":[{"role":"user","content":"my email is test@example.com"}]}`
-	resp, err := p.InterceptRequestAfterAuth(nil, pluginapi.RequestInterceptRequest{
+	resp, err := p.InterceptRequestBeforeAuth(context.Background(), pluginapi.RequestInterceptRequest{
 		Model: "gpt-4",
 		Body:  []byte(body),
 	})
 	if err != nil {
-		t.Fatalf("InterceptRequestAfterAuth() error = %v", err)
+		t.Fatalf("InterceptRequestBeforeAuth() error = %v", err)
 	}
 	if resp.Body == nil {
 		t.Fatal("expected redacted body, got nil")
@@ -136,10 +137,42 @@ func TestInterceptRequestAfterAuth_RedactsFinalRequest(t *testing.T) {
 	}
 }
 
+// Another plugin can inject text after the before-auth pass; the after-auth
+// pass must catch it while leaving the already-redacted text alone.
+func TestInterceptRequestAfterAuth_RedactsTextInjectedLater(t *testing.T) {
+	p := newTestPlugin(t)
+	before, err := p.InterceptRequestBeforeAuth(context.Background(), pluginapi.RequestInterceptRequest{
+		Body: []byte(`{"messages":[{"role":"user","content":"my email is test@example.com"}]}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err = json.Unmarshal(before.Body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	payload["system"] = "memory: other@example.com"
+	injected, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := p.InterceptRequestAfterAuth(context.Background(), pluginapi.RequestInterceptRequest{Body: injected})
+	if err != nil {
+		t.Fatalf("InterceptRequestAfterAuth() error = %v", err)
+	}
+	if after.Body == nil || strings.Contains(string(after.Body), "other@example.com") {
+		t.Fatalf("after-auth hook must redact injected text, got %s", after.Body)
+	}
+	if !strings.Contains(string(after.Body), "my email is [EMAIL]") {
+		t.Fatalf("already-redacted text must stay unchanged, got %s", after.Body)
+	}
+}
+
 func TestInterceptRequestBeforeAuth_Passthrough(t *testing.T) {
 	p := newTestPlugin(t)
 	body := `{"model":"gpt-4","messages":[{"role":"user","content":"normal text"}]}`
-	resp, err := p.interceptRequest(pluginapi.RequestInterceptRequest{
+	resp, err := p.interceptRequest(context.Background(), pluginapi.RequestInterceptRequest{
 		Body: []byte(body),
 	})
 	if err != nil {
@@ -160,9 +193,9 @@ func TestRedactRequestBody_KeywordOverlappingCandidateDoesNotPanic(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	modified, err := p.redactRequestBody(payload)
+	modified, _, err := p.redactPayload(payload)
 	if err != nil {
-		t.Fatalf("redactRequestBody() error = %v", err)
+		t.Fatalf("redactPayload() error = %v", err)
 	}
 	if modified != nil {
 		t.Fatalf("low-entropy text should be unchanged, got: %s", modified)
@@ -173,9 +206,9 @@ func TestRedactRequestBody_SecretDetection(t *testing.T) {
 	p := newTestPlugin(t)
 
 	body := `{"model":"gpt-4","messages":[{"role":"user","content":"my api key is AKIAIOSFODNN7EXAMPLE"}]}`
-	modified, err := p.redactRequestBody([]byte(body))
+	modified, _, err := p.redactPayload([]byte(body))
 	if err != nil {
-		t.Fatalf("redactRequestBody() error = %v", err)
+		t.Fatalf("redactPayload() error = %v", err)
 	}
 	if modified == nil {
 		t.Fatal("expected AWS key to be redacted")
@@ -188,9 +221,9 @@ func TestRedactRequestBody_SecretDetection(t *testing.T) {
 func TestRedactRequestBody_InvalidJSON(t *testing.T) {
 	p := newTestPlugin(t)
 	body := `not valid json with email test@example.com`
-	modified, err := p.redactRequestBody([]byte(body))
+	modified, _, err := p.redactPayload([]byte(body))
 	if err != nil {
-		t.Fatalf("redactRequestBody() error = %v", err)
+		t.Fatalf("redactPayload() error = %v", err)
 	}
 	if modified != nil {
 		t.Fatal("expected nil for invalid JSON, got redacted text")
@@ -381,9 +414,19 @@ func TestConfiguredReplacementRequestStructures(t *testing.T) {
 			`{"input":[{"role":"user","content":[{"type":"input_text","text":"[EMAIL]"},{"type":"input_image","image_url":"https://example.com/test@example.com"},{"type":"input_file","file_data":"test@example.com"}]}]}`,
 		},
 		{
-			"messages takes precedence",
+			"messages and input both redacted",
 			`{"messages":[{"content":"test@example.com"}],"input":"test@example.com"}`,
-			`{"messages":[{"content":"[EMAIL]"}],"input":"test@example.com"}`,
+			`{"messages":[{"content":"[EMAIL]"}],"input":"[EMAIL]"}`,
+		},
+		{
+			"input redacted when messages has no hit",
+			`{"messages":[{"content":"normal text"}],"input":"test@example.com"}`,
+			`{"messages":[{"content":"normal text"}],"input":"[EMAIL]"}`,
+		},
+		{
+			"input redacted when messages is null",
+			`{"messages":null,"input":"test@example.com"}`,
+			`{"messages":null,"input":"[EMAIL]"}`,
 		},
 		{
 			"mixed content and nonobjects",
@@ -393,7 +436,7 @@ func TestConfiguredReplacementRequestStructures(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			resp, err := interceptor.InterceptRequestAfterAuth(nil, pluginapi.RequestInterceptRequest{Body: []byte(tc.body)})
+			resp, err := interceptor.InterceptRequestBeforeAuth(nil, pluginapi.RequestInterceptRequest{Body: []byte(tc.body)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -409,8 +452,6 @@ func TestConfiguredReplacementPassesNontextAndNoHitsThrough(t *testing.T) {
 		`{"messages":[{"content":[{"type":"image_url","image_url":{"url":"https://example.com/test@example.com"}}]}]}`,
 		`{"input":[{"type":"function_call","arguments":"test@example.com"}]}`,
 		`{"messages":[{"content":42},{"content":null},{"content":{"text":"test@example.com"}}]}`,
-		`{"messages":[{"content":"normal text"}],"input":"test@example.com"}`,
-		`{"messages":null,"input":"test@example.com"}`,
 		`{"messages":42}`,
 		`{"input":{"text":"test@example.com"}}`,
 		`{"metadata":{"email":"test@example.com"}}`,

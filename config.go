@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,7 +9,6 @@ import (
 
 	"privacyfilter/filter"
 
-	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
 
@@ -168,9 +168,21 @@ func newFilter(pluginDir string, cfg privacyFilterConfig) (*filter.Filter, error
 		ReplacementLabels: cfg.ReplacementLabels,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create privacy filter: %w", err)
+		var source string
+		switch {
+		case embedded:
+			source = "embedded rules"
+		case cfg.GitleaksTOML != "":
+			source = fmt.Sprintf("gitleaks_toml %q", tomlPath)
+		default:
+			source = fmt.Sprintf("sidecar rules file %q", tomlPath)
+		}
+		return nil, fmt.Errorf("failed to create privacy filter from %s: %w", source, err)
 	}
 	rules, skipped := f.Stats()
-	log.Infof("privacy filter loaded: %d rules, %d skipped", rules, skipped)
+	pluginLog(context.Background(), logLevelInfo, fmt.Sprintf("privacy filter loaded: %d rules, %d skipped", rules, skipped), map[string]any{
+		"rules":         rules,
+		"skipped_rules": skipped,
+	})
 	return f, nil
 }

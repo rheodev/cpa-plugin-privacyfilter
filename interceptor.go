@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"privacyfilter/filter"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
-	log "github.com/sirupsen/logrus"
 )
 
 type privacyFilterPlugin struct {
@@ -24,132 +24,217 @@ func (p *privacyFilterPlugin) Identifier() string {
 }
 
 func (p *privacyFilterPlugin) InterceptRequestBeforeAuth(ctx context.Context, req pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
-	return p.interceptRequest(req)
+	return p.interceptRequest(ctx, req)
 }
 
+// InterceptRequestAfterAuth redacts again because other plugins can add text
+// after the before-auth pass: lower-priority before-auth interceptors and
+// higher-priority after-auth interceptors both run later in the chain.
+// Redaction is idempotent, so already-clean text produces no hits.
 func (p *privacyFilterPlugin) InterceptRequestAfterAuth(ctx context.Context, req pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
-	return p.interceptRequest(req)
+	return p.interceptRequest(ctx, req)
 }
 
-func (p *privacyFilterPlugin) interceptRequest(req pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
+func (p *privacyFilterPlugin) interceptRequest(ctx context.Context, req pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
 	resp := pluginapi.RequestInterceptResponse{}
 
 	if p.cfg.shouldSkip(req.Model, req.RequestedModel, req.SourceFormat) {
 		return resp, nil
 	}
-
-	body := req.Body
-	if len(body) == 0 {
+	if len(req.Body) == 0 {
 		return resp, nil
 	}
 
-	modified, err := p.redactRequestBody(body)
+	modified, hits, err := p.redactPayload(req.Body)
 	if err != nil {
-		log.Warnf("privacy filter failed to process request body: %v", err)
+		pluginLog(ctx, logLevelWarn, "privacy filter failed to process request body: "+err.Error(), map[string]any{
+			"error": err.Error(),
+		})
+		return resp, nil
+	}
+	if modified == nil {
 		return resp, nil
 	}
 
-	if modified != nil {
-		resp.Body = modified
-	}
+	// The host text formatter only prints a fixed set of field names, so the
+	// summary is repeated in the message.
+	message := fmt.Sprintf("privacy filter redacted %d field(s): %s", len(hits), strings.Join(hits, ", "))
+	pluginLog(ctx, logLevelInfo, message, map[string]any{
+		"model":           req.Model,
+		"source_format":   req.SourceFormat,
+		"redacted_count":  len(hits),
+		"redacted_fields": hits,
+	})
+	resp.Body = modified
 	return resp, nil
 }
 
-func (p *privacyFilterPlugin) redactRequestBody(body []byte) ([]byte, error) {
+// redactPayload returns the rewritten body (nil when nothing changed) and the
+// JSON paths of the redacted fields. Non-JSON bodies pass through untouched.
+func (p *privacyFilterPlugin) redactPayload(body []byte) ([]byte, []string, error) {
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
-	field := "messages"
-	items, ok := payload[field]
-	if !ok {
-		field = "input"
-		items, ok = payload[field]
-	}
-	if !ok {
-		return nil, nil
-	}
-
-	changed := false
-	if inputText, ok := items.(string); ok {
-		changed = p.editText(&inputText)
-		if changed {
-			payload[field] = inputText
-			log.Infof("privacy filter: redacted entities in %s (model=%s)", field, payload["model"])
-		}
-	} else if itemSlice, ok := items.([]any); ok {
-		changed = p.editContentItems(itemSlice, field, payload["model"])
-		if changed {
-			payload[field] = itemSlice
-		}
-	} else {
-		return nil, nil
-	}
-	if !changed {
-		return nil, nil
+	r := &redaction{filter: p.filter}
+	if !r.payload(payload, "") {
+		return nil, nil, nil
 	}
 
 	out, err := json.Marshal(payload)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal redacted request: %w", err)
+		return nil, nil, fmt.Errorf("failed to marshal redacted request: %w", err)
 	}
-	return out, nil
+	return out, r.hits, nil
 }
 
-func (p *privacyFilterPlugin) editContentItems(items []any, field string, model any) bool {
+// redaction walks the prompt-bearing fields of the client request formats the
+// host passes to interceptors (OpenAI chat, OpenAI Responses, OpenAI image and
+// video generation, Claude, Gemini and Gemini CLI). Only free-form text is rewritten; structured data such as tool
+// call arguments, function responses, files and images is left untouched.
+type redaction struct {
+	filter *filter.Filter
+	hits   []string
+}
+
+func (r *redaction) payload(m map[string]any, path string) bool {
 	changed := false
-	for i, item := range items {
-		itemMap, ok := item.(map[string]any)
-		if !ok {
-			continue
+	// messages: OpenAI chat and Claude. input: OpenAI Responses. contents: Gemini.
+	for _, key := range []string{"messages", "input", "contents"} {
+		changed = r.itemsField(m, key, path) || changed
+	}
+	// system: Claude. instructions: OpenAI Responses.
+	for _, key := range []string{"system", "instructions"} {
+		changed = r.contentField(m, key, path) || changed
+	}
+	for _, key := range []string{"systemInstruction", "system_instruction"} {
+		if instruction, ok := m[key].(map[string]any); ok {
+			changed = r.item(instruction, joinPath(path, key)) || changed
 		}
-		content, ok := itemMap["content"]
-		if !ok {
-			continue
+	}
+	changed = r.promptField(m, path) || changed
+	// Gemini CLI wraps a Gemini request in a top-level "request" object.
+	if inner, ok := m["request"].(map[string]any); ok && path == "" {
+		changed = r.payload(inner, "request") || changed
+	}
+	return changed
+}
+
+func (r *redaction) itemsField(m map[string]any, key, path string) bool {
+	path = joinPath(path, key)
+	switch v := m[key].(type) {
+	case string:
+		return r.stringField(m, key, path)
+	case []any:
+		changed := false
+		for i, item := range v {
+			if itemMap, ok := item.(map[string]any); ok {
+				changed = r.item(itemMap, fmt.Sprintf("%s[%d]", path, i)) || changed
+			}
 		}
-		if p.editContent(&content) {
-			itemMap["content"] = content
-			changed = true
-			log.Infof("privacy filter: redacted entities in %s[%d] (model=%s)", field, i, model)
+		return changed
+	}
+	return false
+}
+
+// item handles a single conversation entry: an OpenAI/Claude message, an
+// OpenAI Responses input item, or a Gemini content / system instruction.
+func (r *redaction) item(m map[string]any, path string) bool {
+	changed := r.contentField(m, "content", path)
+	if m["type"] == "function_call_output" {
+		changed = r.contentField(m, "output", path) || changed
+	}
+	if parts, ok := m["parts"].([]any); ok {
+		changed = r.parts(parts, joinPath(path, "parts")) || changed
+	}
+	return changed
+}
+
+func (r *redaction) parts(parts []any, path string) bool {
+	changed := false
+	for i, part := range parts {
+		if partMap, ok := part.(map[string]any); ok {
+			changed = r.part(partMap, fmt.Sprintf("%s[%d]", path, i)) || changed
 		}
 	}
 	return changed
 }
 
-func (p *privacyFilterPlugin) editContent(content *any) bool {
-	changed := false
-	switch v := (*content).(type) {
+func (r *redaction) part(m map[string]any, path string) bool {
+	// Gemini thought parts are bound to a thoughtSignature; rewriting their
+	// text would make the upstream reject the signature.
+	if thought, _ := m["thought"].(bool); thought {
+		return false
+	}
+	changed := r.stringField(m, "text", joinPath(path, "text"))
+	if m["type"] == "tool_result" {
+		changed = r.contentField(m, "content", path) || changed
+	}
+	return changed
+}
+
+// contentField redacts a value that is either plain text or a list of parts.
+func (r *redaction) contentField(m map[string]any, key, path string) bool {
+	path = joinPath(path, key)
+	switch v := m[key].(type) {
 	case string:
-		if p.editText(&v) {
-			*content = v
-			changed = true
-		}
+		return r.stringField(m, key, path)
 	case []any:
-		for j, part := range v {
-			partMap, ok := part.(map[string]any)
+		return r.parts(v, path)
+	}
+	return false
+}
+
+// promptField handles the image/video generation prompt (a string or a list of
+// strings). Completions requests never reach interceptors in this shape: the
+// host converts them to chat completions first.
+func (r *redaction) promptField(m map[string]any, path string) bool {
+	path = joinPath(path, "prompt")
+	switch v := m["prompt"].(type) {
+	case string:
+		return r.stringField(m, "prompt", path)
+	case []any:
+		changed := false
+		for i, item := range v {
+			text, ok := item.(string)
 			if !ok {
 				continue
 			}
-			text, ok := partMap["text"].(string)
-			if !ok {
-				continue
-			}
-			if p.editText(&text) {
-				partMap["text"] = text
-				v[j] = partMap
+			if redacted, hit := r.text(text, fmt.Sprintf("%s[%d]", path, i)); hit {
+				v[i] = redacted
 				changed = true
 			}
 		}
+		return changed
 	}
-	return changed
+	return false
 }
 
-func (p *privacyFilterPlugin) editText(text *string) bool {
-	result := p.filter.Redact(*text)
-	if !result.Hit {
+func (r *redaction) stringField(m map[string]any, key, path string) bool {
+	text, ok := m[key].(string)
+	if !ok {
 		return false
 	}
-	*text = result.Redacted
-	return true
+	redacted, hit := r.text(text, path)
+	if hit {
+		m[key] = redacted
+	}
+	return hit
+}
+
+func (r *redaction) text(text, path string) (string, bool) {
+	result := r.filter.Redact(text)
+	if !result.Hit {
+		return text, false
+	}
+	r.hits = append(r.hits, path)
+	return result.Redacted, true
+}
+
+func joinPath(path, key string) string {
+	if path == "" {
+		return key
+	}
+	return path + "." + key
 }

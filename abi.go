@@ -49,11 +49,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"unsafe"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	log "github.com/sirupsen/logrus"
 )
 
 var privacyFilterABIState = struct {
@@ -95,6 +97,100 @@ type abiRegistration struct {
 
 type abiCapabilities struct {
 	RequestInterceptor bool `json:"request_interceptor"`
+}
+
+type abiHostLogRequest struct {
+	HostCallbackID string         `json:"host_callback_id,omitempty"`
+	Level          string         `json:"level"`
+	Message        string         `json:"message"`
+	Fields         map[string]any `json:"fields,omitempty"`
+}
+
+const (
+	logLevelInfo  = "info"
+	logLevelWarn  = "warn"
+	logLevelError = "error"
+)
+
+type hostCallbackIDKey struct{}
+
+func withHostCallbackID(ctx context.Context, id string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if id = strings.TrimSpace(id); id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, hostCallbackIDKey{}, id)
+}
+
+func hostCallbackIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	id, _ := ctx.Value(hostCallbackIDKey{}).(string)
+	return id
+}
+
+// pluginLog routes logs through host.log so they follow the host's log level,
+// format and output and carry the request_id. The plugin's own logrus copy is
+// a separate instance inside the shared library, so it is only a fallback for
+// when no host is attached (tests, or a failed host call).
+func pluginLog(ctx context.Context, level, message string, fields map[string]any) {
+	if hostLog(hostCallbackIDFromContext(ctx), level, message, fields) {
+		return
+	}
+	entry := log.WithFields(log.Fields(fields))
+	switch level {
+	case logLevelError:
+		entry.Error(message)
+	case logLevelWarn:
+		entry.Warn(message)
+	case logLevelInfo:
+		entry.Info(message)
+	default:
+		entry.Debug(message)
+	}
+}
+
+func hostLog(callbackID, level, message string, fields map[string]any) bool {
+	privacyFilterABIState.RLock()
+	host := privacyFilterABIState.host
+	privacyFilterABIState.RUnlock()
+	if host == nil || host.call == nil {
+		return false
+	}
+	raw, errMarshal := json.Marshal(abiHostLogRequest{
+		HostCallbackID: callbackID,
+		Level:          level,
+		Message:        message,
+		Fields:         fields,
+	})
+	if errMarshal != nil {
+		return false
+	}
+
+	method := C.CString(pluginabi.MethodHostLog)
+	defer C.free(unsafe.Pointer(method))
+	request := C.CBytes(raw)
+	defer C.free(request)
+
+	var response C.cliproxy_buffer
+	status := C.privacyfilter_call_host(host, method, (*C.uint8_t)(request), C.size_t(len(raw)), &response)
+	if response.ptr != nil && host.free_buffer != nil {
+		defer C.privacyfilter_free_host_buffer(host, response.ptr, response.len)
+	}
+	if status != 0 {
+		return false
+	}
+	if response.ptr == nil || response.len == 0 || response.len > maxCGoBytesLen {
+		return true
+	}
+	var envelope abiEnvelope
+	if errDecode := json.Unmarshal(C.GoBytes(response.ptr, C.int(response.len)), &envelope); errDecode != nil {
+		return false
+	}
+	return envelope.OK
 }
 
 func main() {}
@@ -171,7 +267,7 @@ func PrivacyFilterPluginShutdown() {
 func handlePrivacyFilterABIMethod(ctx context.Context, method string, request []byte) ([]byte, error) {
 	switch method {
 	case pluginabi.MethodPluginRegister, pluginabi.MethodPluginReconfigure:
-		return handlePrivacyFilterRegister(request)
+		return handlePrivacyFilterRegister(ctx, method, request)
 	}
 
 	p, done, errPlugin := beginPrivacyFilterPluginCall()
@@ -186,27 +282,39 @@ func handlePrivacyFilterABIMethod(ctx context.Context, method string, request []
 		if errDecode := json.Unmarshal(request, &req); errDecode != nil {
 			return nil, errDecode
 		}
-		resp, errCall := p.InterceptRequestBeforeAuth(ctx, req.RequestInterceptRequest)
+		resp, errCall := p.InterceptRequestBeforeAuth(withHostCallbackID(ctx, req.HostCallbackID), req.RequestInterceptRequest)
 		return abiOKEnvelopeWithError(resp, errCall)
 	case pluginabi.MethodRequestInterceptAfter:
 		var req abiRequestInterceptRequest
 		if errDecode := json.Unmarshal(request, &req); errDecode != nil {
 			return nil, errDecode
 		}
-		resp, errCall := p.InterceptRequestAfterAuth(ctx, req.RequestInterceptRequest)
+		resp, errCall := p.InterceptRequestAfterAuth(withHostCallbackID(ctx, req.HostCallbackID), req.RequestInterceptRequest)
 		return abiOKEnvelopeWithError(resp, errCall)
 	default:
 		return abiErrorEnvelope("unknown_method", "unknown method: "+method), nil
 	}
 }
 
-func handlePrivacyFilterRegister(request []byte) ([]byte, error) {
+func handlePrivacyFilterRegister(ctx context.Context, method string, request []byte) ([]byte, error) {
 	var req abiLifecycleRequest
 	if errDecode := json.Unmarshal(request, &req); errDecode != nil {
 		return nil, errDecode
 	}
 	plugin, errBuild := buildPlugin(req.ConfigYAML, req.PluginDir)
 	if errBuild != nil {
+		privacyFilterABIState.RLock()
+		hasPrevious := privacyFilterABIState.plugin != nil
+		privacyFilterABIState.RUnlock()
+		// The host drops a plugin whose reconfigure fails, which would silently
+		// stop redaction. Keep filtering with the last valid config instead and
+		// report the rejected config loudly.
+		if method == pluginabi.MethodPluginReconfigure && hasPrevious {
+			pluginLog(ctx, logLevelError, "privacy filter rejected new config, still using the previous valid config: "+errBuild.Error(), map[string]any{
+				"error": errBuild.Error(),
+			})
+			return abiOKEnvelope(newABIRegistration(pluginMetadata()))
+		}
 		return nil, errBuild
 	}
 	p, ok := plugin.Capabilities.RequestInterceptor.(*privacyFilterPlugin)
@@ -217,13 +325,15 @@ func handlePrivacyFilterRegister(request []byte) ([]byte, error) {
 	privacyFilterABIState.plugin = p
 	privacyFilterABIState.shuttingDown = false
 	privacyFilterABIState.Unlock()
-	return abiOKEnvelope(abiRegistration{
+	return abiOKEnvelope(newABIRegistration(plugin.Metadata))
+}
+
+func newABIRegistration(metadata pluginapi.Metadata) abiRegistration {
+	return abiRegistration{
 		SchemaVersion: pluginabi.SchemaVersion,
-		Metadata:      plugin.Metadata,
-		Capabilities: abiCapabilities{
-			RequestInterceptor: plugin.Capabilities.RequestInterceptor != nil,
-		},
-	})
+		Metadata:      metadata,
+		Capabilities:  abiCapabilities{RequestInterceptor: true},
+	}
 }
 
 func beginPrivacyFilterPluginCall() (*privacyFilterPlugin, func(), error) {
