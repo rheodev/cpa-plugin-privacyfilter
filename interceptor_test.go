@@ -284,7 +284,7 @@ func newConfiguredInterceptor(t *testing.T, configYAML string) pluginapi.Request
 	if err := os.WriteFile(filepath.Join(dir, "rules.toml"), []byte("title = \"consumer test\"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	plugin, err := buildPlugin([]byte("gitleaks_toml: rules.toml\n"+configYAML), dir)
+	plugin, err := buildPlugin([]byte("gitleaks_toml: rules.toml\n"+configYAML), dir, nil)
 	if err != nil {
 		t.Fatalf("buildPlugin() error = %v", err)
 	}
@@ -344,7 +344,7 @@ func TestBuildPluginRejectsInvalidReplacementConfig(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := buildPlugin([]byte(tc.yaml), t.TempDir()); err == nil {
+			if _, err := buildPlugin([]byte(tc.yaml), t.TempDir(), nil); err == nil {
 				t.Fatalf("buildPlugin accepted invalid config: %s", tc.yaml)
 			}
 		})

@@ -8,4 +8,4 @@ test-output*
 .idea/
 *.iml
 *.log
-*.tmp
+*.tmp__pycache__/
